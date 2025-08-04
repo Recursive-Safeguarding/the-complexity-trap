@@ -766,6 +766,7 @@ class DefaultAgent(AbstractAgent):
                 "agent": self.name,
                 "tool_calls": step.tool_calls,
                 "message_type": "action",
+                "thinking_blocks": step.thinking_blocks,
             },
         )
 
@@ -1087,6 +1088,7 @@ class DefaultAgent(AbstractAgent):
             step.turn_statistics = output.get("turn_statistics")
             # todo: Can't I override the parser in __init__?
             step.thought, step.action = self.tools.parse_actions(output)
+            step.thinking_blocks = output.get("thinking_blocks", [])
             self.model.update_cached_context(history=history, content=output['message'], model_type="agent", action=step.action, thought=step.thought)
             if output.get("tool_calls") is not None:
                 step.tool_call_ids = [call["id"] for call in output["tool_calls"]]

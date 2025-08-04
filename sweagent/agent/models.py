@@ -969,10 +969,12 @@ class LiteLLMModel(AbstractModel):
         for message in messages_no_cache_control:
             if "cache_control" in message:
                 del message["cache_control"]
-        input_tokens: int = litellm.utils.token_counter(messages=messages_no_cache_control, 
+            if "thinking_blocks" in message:
+                del message["thinking_blocks"]
+        input_tokens: int = litellm.utils.token_counter(messages=messages_no_cache_control,
                                                         model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
                                                         custom_tokenizer=self.custom_tokenizer)
-        
+
         cached_input_tokens = 0
         if self._cached_context is not None:
             try:
@@ -980,7 +982,7 @@ class LiteLLMModel(AbstractModel):
             except Exception as e:
                 self.logger.debug(f"Error calculating cached tokens: {e}, setting to 0")
                 cached_input_tokens = 0
-                
+
         if self.model_max_input_tokens is None:
             msg = (
                 f"No max input tokens found for model {self.config.name!r}. "
@@ -1116,7 +1118,7 @@ class LiteLLMModel(AbstractModel):
         self.logger.info(f"Response: {response}")
         try:
             if not self.config.is_local_model:
-                cost = litellm.cost_calculator.completion_cost(response)
+                cost = litellm.cost_calculator.completion_cost(response, model=self.config.name)
             else:
                 cost = 0
         except Exception as e:
@@ -1202,13 +1204,17 @@ class LiteLLMModel(AbstractModel):
                 if self.tools.use_function_calling:
                     if response.choices[i].message.tool_calls:  # type: ignore
                         tool_calls = [call.to_dict() for call in response.choices[i].message.tool_calls]  # type: ignore
+                        if (
+                            hasattr(response.choices[i].message, "thinking_blocks")
+                            and response.choices[i].message.thinking_blocks
+                        ):  # type: ignore
+                            output_dict["thinking_blocks"] = response.choices[i].message.thinking_blocks  # type: ignore
                     else:
                         tool_calls = []
                     output_dict["tool_calls"] = tool_calls
                 outputs.append(output_dict)
-        
+
         self._update_stats(input_tokens=input_tokens, output_tokens=output_tokens, cost=cost, cached_input_tokens=cached_input_tokens)
-    
         return outputs
 
     def _query(
@@ -1425,6 +1431,8 @@ class LiteLLMModel(AbstractModel):
                     if "type" not in tool_call:
                         tool_call["type"] = "function"
                 message = {"role": role, "content": history_item["content"], "tool_calls": tool_calls}
+                if thinking_blocks := history_item.get("thinking_blocks"):
+                    message["thinking_blocks"] = thinking_blocks
             else:
                 message = {"role": role, "content": history_item["content"]}
             if "cache_control" in history_item:

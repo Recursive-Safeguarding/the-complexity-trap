@@ -23,6 +23,8 @@ class StepOutput(PydanticBaseModel):
     state: dict[str, str] = {}
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_ids: list[str] | None = None
+    thinking_blocks: list[dict[str, Any]] | None = None
+
     """State of the environment at the end of the step"""
     turn_statistics: TurnStatistics | None = None
     extra_info: dict[str, Any] = {}
@@ -67,6 +69,8 @@ class HistoryItem(_HistoryItem, total=False):
     tool_call_ids: list[str] | None
     tags: list[str]
     cache_control: dict[str, Any] | None
+    thinking_blocks: list[dict[str, Any]] | None
+
     """HistoryProcessors can add these tags to enable special processing"""
 
 
