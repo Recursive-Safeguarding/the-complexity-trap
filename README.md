@@ -1,7 +1,30 @@
 # The Complexity Trap: Simple Observation Masking Is as Efficient as LLM Summarization for Agent Context Management
 *DISCLAIMER: Our work builds on SWE-agent, which this repository is a fork of. For documentation of SWE-agent, see the original [README](SWE-agent-README.md).*
 
-This repo accompanies the paper **"The Complexity Trap: Simple Observation Masking Is as Efficient as LLM Summarization for Agent Context Management"**.
+<div style="text-align: center;">
+    <img src="auxiliary-data/figure1_cost_vs_solve_rate.png" alt="SWE-agent banner" style="height: 25em;">
+</div>
+
+This repo accompanies the paper [**"The Complexity Trap: Simple Observation Masking Is as Efficient as LLM Summarization for Agent Context Management"**](https://arxiv.org/abs/2508.21433) presented at the Fourth Deep Learning for Code (DL4Code) workshop at NeurIPS 2025 and Tobias Lindenbauer's Master's Thesis.
+
+We find that:
+1. Current efficiency-oriented agent context management methods consistently and significantly reduce cost by around 50% without significantly degrading downstream task performance.
+2. The more recent LLM-Summary strategy is unable to consistently or significantly outperform a simple Observation Masking baseline, raising concerns about the optimality of the LLM-Summary strategy.
+3. These effects generalize to the OpenHands agent scaffold.
+4. Our novel combination of LLM-Summary and Observation Masking results in 7% and 11% cost reductions compared to just Observation Masking and LLM-Summary respectively. This innovative approach empirically highlights the untapped potential of efficiency-focused context management strategies for LLM agents.
+
+If you used these data in your research, or it helped you form a hypothesis, please cite us:
+```
+@misc{lindenbauer2025complexitytrapsimpleobservation,
+      title={The Complexity Trap: Simple Observation Masking Is as Efficient as LLM Summarization for Agent Context Management}, 
+      author={Tobias Lindenbauer and Igor Slinko and Ludwig Felder and Egor Bogomolov and Yaroslav Zharov},
+      year={2025},
+      eprint={2508.21433},
+      archivePrefix={arXiv},
+      primaryClass={cs.SE},
+      url={https://arxiv.org/abs/2508.21433}, 
+}
+```
 
 ## Contributions
 - Implementation of an [**LLM-Summary context management strategy**](sweagent/agent/history_processors.py) within the SWE-agent scaffold.
