@@ -1,0 +1,26 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="run_sweagent" type="PythonConfigurationType" factoryName="Python">
+    <module name="swe-agent-distillation" />
+    <option name="ENV_FILES" value="$PROJECT_DIR$/my.env" />
+    <option name="INTERPRETER_OPTIONS" value="" />
+    <option name="PARENT_ENVS" value="true" />
+    <envs>
+      <env name="PYTHONUNBUFFERED" value="1" />
+    </envs>
+    <option name="SDK_HOME" value="" />
+    <option name="SDK_NAME" value="uv (swe-agent-distillation)" />
+    <option name="WORKING_DIRECTORY" value="" />
+    <option name="IS_MODULE_SDK" value="false" />
+    <option name="ADD_CONTENT_ROOTS" value="true" />
+    <option name="ADD_SOURCE_ROOTS" value="true" />
+    <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/.venv/bin/sweagent" />
+    <option name="PARAMETERS" value="run-batch --config config/default.yaml --agent.model.name grazie:openai-gpt-4o --num_workers 1 --agent.model.per_instance_cost_limit 50.00 --instances.type swe_bench --instances.subset verified --instances.split test --instances.filter &quot;(sympy__sympy-22080|django__django-15315|django__django-11333)&quot; --instances.shuffle True" />
+    <option name="SHOW_COMMAND_LINE" value="false" />
+    <option name="EMULATE_TERMINAL" value="false" />
+    <option name="MODULE_MODE" value="false" />
+    <option name="REDIRECT_INPUT" value="false" />
+    <option name="INPUT_FILE" value="" />
+    <method v="2" />
+  </configuration>
+</component>
