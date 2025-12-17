@@ -1,0 +1,61 @@
+# Bayesian search on verified-mini (50 instances, ~5GB)
+# 6 models × 4 strategies, $3/instance cap
+# wandb sweep sweeps/models_mini.yaml && wandb agent <id>
+
+program: scripts/run_sweep.py
+method: bayes
+
+metric:
+  name: submission_rate
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  eta: 2
+  s: 2
+
+parameters:
+  model:
+    values:
+      - deepseek-chat
+      - bedrock-qwen3-32b
+      - glm-4.6
+      - kimi-k2
+      - minimax-m2
+      - gpt-4o-mini
+
+  strategy:
+    values:
+      - observation_masking
+      - hybrid
+      - llm_summary
+      - raw
+
+  summarizer-model:
+    value: same
+
+  instances-subset:
+    value: verified-mini
+
+  instances-shuffle:
+    value: true
+
+  instances-shuffle-seed:
+    value: 42
+
+  call-limit:
+    value: 250
+
+  cost-limit:
+    value: 3.0
+
+  num-workers:
+    value: 1
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - ${args}
+  - --wandb

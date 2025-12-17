@@ -81,7 +81,7 @@ def parse_args():
     parser.add_argument(
         "--instances-subset",
         default="verified",
-        choices=["verified", "lite"],
+        choices=["verified", "verified-mini", "lite"],
         help="SWE-bench subset"
     )
     parser.add_argument(
