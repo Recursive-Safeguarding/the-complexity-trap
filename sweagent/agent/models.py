@@ -988,13 +988,42 @@ class LiteLLMModel(AbstractModel):
             )
             # self.logger.warning(msg)  # Commented out for now
         elif input_tokens > self.model_max_input_tokens > 0:
-            msg = f"Input tokens {input_tokens} exceed max tokens {self.model_max_input_tokens}"
+            # Rolling truncation: drop oldest messages (keep system prompt) until under limit
+            original_count = len(messages)
+            original_tokens = input_tokens
+
+            while input_tokens > self.model_max_input_tokens and len(messages) > 2:
+                messages.pop(1)  # drop oldest non-system msg
+
+                # recalculate tokens
+                messages_no_cc = [{k: v for k, v in m.items() if k != "cache_control"} for m in messages]
+                input_tokens = litellm.utils.token_counter(
+                    messages=messages_no_cc,
+                    model=self.custom_tokenizer.get('identifier', self.config.name) if self.custom_tokenizer else self.config.name,
+                    custom_tokenizer=self.custom_tokenizer
+                )
+
+            if len(messages) <= 2 and input_tokens > self.model_max_input_tokens:
+                # can't fit even minimal context
+                msg = f"Cannot fit even minimal context ({input_tokens:,} tokens) in {self.model_max_input_tokens:,} limit"
+                self.logger.error(msg)
+                raise ContextWindowExceededError(msg)
+
+            # recompute cached tokens post-truncation
+            if self._cached_context is not None:
+                try:
+                    cached_input_tokens = self._calculate_cached_tokens(messages)
+                except Exception as e:
+                    self.logger.debug(f"Error recalculating cached tokens after truncation: {e}")
+                    cached_input_tokens = 0
+
+            # sync messages_no_cache_control
+            messages_no_cache_control = [{k: v for k, v in m.items() if k != "cache_control"} for m in messages]
+
             self.logger.warning(
-                f"CONTEXT_WINDOW_SCENARIO_1: SWE-agent pre-check failed. "
-                f"Input tokens ({input_tokens:,}) exceed configured max_input_tokens ({self.model_max_input_tokens:,}) "
-                f"for model {self.config.name!r}"
+                f"Rolling truncation: {original_tokens:,} → {input_tokens:,} tokens, "
+                f"{original_count} → {len(messages)} messages (model: {self.config.name!r})"
             )
-            raise ContextWindowExceededError(msg)
         extra_args = {}
         if self.config.api_base:
             # Not assigned a default value in litellm, so only pass this if it's set
