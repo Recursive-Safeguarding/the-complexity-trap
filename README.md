@@ -95,6 +95,18 @@ sweagent run-batch \
 ```
 Please also refer to the [official SWE-agent documentation](https://swe-agent.com/latest/) for further details on config flags.
 
+## Bedrock Usage
+
+```bash
+sweagent run-batch \
+  --config config/default_no_demo_N=1_M=10.yaml \
+  --agent.model.name bedrock/converse/qwen.qwen3-32b-v1:0 \
+  --instances.type swe_bench --instances.subset verified \
+  --instances.slice :5
+```
+
+Requires `AWS_DEFAULT_REGION` and either `AWS_BEARER_TOKEN_BEDROCK` or standard AWS credentials.
+
 ## LLM-Summary history processor
 To enable the LLM-Summarizer, add it to your configuration as shown in [`default_no_demo_checkpoint_same_model_openhands_N=21_M=10.yaml`](config/default_no_demo_checkpoint_same_model_openhands_N=21_M=10.yaml). For details, see [the summarizer implementation](sweagent/agent/history_processors.py) and the [prompt construction and API call](sweagent/agent/models.py)
 

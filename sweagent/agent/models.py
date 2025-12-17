@@ -270,9 +270,14 @@ GLOBAL_STATS_LOCK = Lock()
 
 class AbstractModel(ABC):
     def __init__(self, config: ModelConfig, tools: ToolConfig):
-        self.config: ModelConfig
-        self.stats: InstanceStats
-        self.shared_stats: dict[str, Any] = {}
+        # NOTE: Many concrete models override these assignments, but setting sane
+        # defaults here prevents surprising AttributeErrors (especially in unit
+        # tests and for lightweight "toy" models).
+        self.config: ModelConfig = config
+        self.stats: InstanceStats = InstanceStats()
+        # Shared across runs/threads by orchestration code; keep sane defaults so
+        # unit tests and single-model usage don't KeyError.
+        self.shared_stats: dict[str, Any] = {"total_agent_api_calls": 0}
         self.summary_system_prompt: str | None = None
         self._cached_context: History | None = None
 
@@ -333,8 +338,10 @@ class AbstractModel(ABC):
         common_prefix = current_history[:common_prefix_length]
         if hasattr(self, 'custom_tokenizer') and self.custom_tokenizer and 'identifier' in self.custom_tokenizer:
             return litellm.utils.token_counter(messages=common_prefix, model=self.custom_tokenizer['identifier'], custom_tokenizer=self.custom_tokenizer)
-        else:
-            return litellm.utils.token_counter(messages=common_prefix, model=self.config.name)
+        # Fall back to LiteLLM's default token counter (no model required). This
+        # keeps the method usable even when a model instance is constructed
+        # without calling __init__ (e.g., in unit tests via object.__new__).
+        return litellm.utils.token_counter(messages=common_prefix)
     
     def _construct_user_prompt_for_summary(
         self,
@@ -424,15 +431,22 @@ class AbstractModel(ABC):
         """Cost limit for the model. Returns 0 if there is no limit."""
         return 0
 
-    @abstractmethod
-    def query_for_summary(self, 
-                          context: str, 
-                          turns: Turns, 
-                          extract_action_from_turns: bool = False, 
-                          max_kept_action_length: int = -1, 
-                          max_kept_reasoning_length: int = -1) -> SummaryMetadata:
-        """Query the model to summarize a list of turns given some context."""
-        ...
+    def query_for_summary(
+        self,
+        context: str,
+        turns: Turns,
+        extract_action_from_turns: bool = False,
+        max_kept_action_length: int = -1,
+        max_kept_reasoning_length: int = -1,
+    ) -> SummaryMetadata:
+        """Query the model to summarize a list of turns given some context.
+
+        Only some model implementations support summarization. If you enable a summary-based
+        history processor (e.g., `SummarizeEveryNTurns`) you must use a model that overrides
+        this method (e.g., `LiteLLMModel`).
+        """
+        model_name = getattr(getattr(self, "config", None), "name", None)
+        raise NotImplementedError(f"Model {model_name!r} does not implement query_for_summary()")
 
 
 def _handle_raise_commands(action: str) -> None:
@@ -696,13 +710,18 @@ class LiteLLMModel(AbstractModel):
 
         # Always copy config to avoid shared state between different instances
         self.config: GenericAPIModelConfig = args.model_copy(deep=True)
+        self._litellm_call_model = self._resolve_litellm_call_model(self.config.name)
         self.stats = InstanceStats()
         self.tools = tools
         self.logger = get_logger("swea-lm", emoji="🤖")
         self.custom_tokenizer = None
         
         if tools.use_function_calling:
-            if not litellm.utils.supports_function_calling(model=self.config.name):
+            supports_function_calling = litellm.utils.supports_function_calling(model=self.config.name)
+            if not supports_function_calling and self.config.name.startswith("openai/responses/"):
+                base_model = self.config.name.split("openai/responses/", 1)[1]
+                supports_function_calling = litellm.utils.supports_function_calling(model=base_model)
+            if not supports_function_calling:
                 msg = (
                     f"Model {self.config.name} does not support function calling. If your model"
                     " does not support function calling, you can use `parse_function='thought_action'` instead. "
@@ -749,6 +768,18 @@ class LiteLLMModel(AbstractModel):
                     self.custom_tokenizer['tokenizer'] = AutoTokenizer.from_pretrained(self.custom_tokenizer['identifier']).backend_tokenizer
             else:
                 self.logger.warning(f"Local model identifier {self.lm_provider} has an unknown format. Using default tokenizer.")
+
+    @staticmethod
+    def _resolve_litellm_call_model(model_name: str) -> str:
+        if model_name.startswith("openai/responses/"):
+            return model_name
+        if model_name.startswith("gpt-5"):
+            return f"openai/responses/{model_name}"
+        if model_name.startswith("openai/"):
+            base_model = model_name.split("/", 1)[1]
+            if base_model.startswith("gpt-5"):
+                return f"openai/responses/{base_model}"
+        return model_name
 
     @property
     def instance_cost_limit(self) -> float:
@@ -851,23 +882,41 @@ class LiteLLMModel(AbstractModel):
             extra_args["api_base"] = self.config.api_base
         if self.tools.use_function_calling:
             extra_args["tools"] = self.tools.tools
-        if self.config.use_reasoning:
+        if self.config.is_local_model and self.config.use_reasoning:
             extra_args["chat_template_kwargs"] = {"enable_thinking": True}
-        else:
-            extra_args["chat_template_kwargs"] = {"enable_thinking": False}
         # We need to always set max_tokens for anthropic models
-        completion_kwargs = self.config.completion_kwargs
+        completion_kwargs = copy.deepcopy(self.config.completion_kwargs)
+        api_key = self.config.choose_api_key()
+
+        # Bedrock: pass dummy creds to satisfy boto3 resolution when using bearer token
+        has_bedrock_bearer_token = bool(os.getenv("AWS_BEARER_TOKEN_BEDROCK") or api_key)
+        if self.config.name.startswith("bedrock/") and has_bedrock_bearer_token:
+            has_explicit_env_creds = bool(os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"))
+            has_explicit_kw_creds = bool(
+                completion_kwargs.get("aws_access_key_id") and completion_kwargs.get("aws_secret_access_key")
+            )
+            if not has_explicit_env_creds and not has_explicit_kw_creds:
+                completion_kwargs["aws_access_key_id"] = "DUMMY"
+                completion_kwargs["aws_secret_access_key"] = "DUMMY"
+            if "aws_region_name" not in completion_kwargs:
+                region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+                if region:
+                    completion_kwargs["aws_region_name"] = region
+
+        if self.config.name.startswith("bedrock/") and self.model_max_output_tokens and "max_tokens" not in completion_kwargs:
+            completion_kwargs["max_tokens"] = self.model_max_output_tokens
+
         if self.lm_provider == "anthropic":
             completion_kwargs["max_tokens"] = self.model_max_output_tokens
         try:
             start_time = time.perf_counter()
             response: litellm.types.utils.ModelResponse = litellm.completion(  # type: ignore
-                model=self.config.name,
+                model=self._litellm_call_model,
                 messages=messages,
                 temperature=self.config.temperature if temperature is None else temperature,
                 top_p=self.config.top_p,
                 api_version=self.config.api_version,
-                api_key=self.config.choose_api_key(),
+                api_key=api_key,
                 fallbacks=self.config.fallbacks,
                 **completion_kwargs,
                 **extra_args,
@@ -992,21 +1041,40 @@ class LiteLLMModel(AbstractModel):
             # Not assigned a default value in litellm, so only pass this if it's set
             extra_args["api_base"] = self.config.api_base
 
-        if self.config.use_reasoning:
+        if self.config.is_local_model and self.config.use_reasoning:
             extra_args["chat_template_kwargs"] = {"enable_thinking": True}
-        else:
-            extra_args["chat_template_kwargs"] = {"enable_thinking": False}
+
+        completion_kwargs = copy.deepcopy(self.config.completion_kwargs)
+        api_key = self.config.choose_api_key()
+
+        # Bedrock: pass dummy creds to satisfy boto3 resolution when using bearer token
+        has_bedrock_bearer_token = bool(os.getenv("AWS_BEARER_TOKEN_BEDROCK") or api_key)
+        if self.config.name.startswith("bedrock/") and has_bedrock_bearer_token:
+            has_explicit_env_creds = bool(os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"))
+            has_explicit_kw_creds = bool(
+                completion_kwargs.get("aws_access_key_id") and completion_kwargs.get("aws_secret_access_key")
+            )
+            if not has_explicit_env_creds and not has_explicit_kw_creds:
+                completion_kwargs["aws_access_key_id"] = "DUMMY"
+                completion_kwargs["aws_secret_access_key"] = "DUMMY"
+            if "aws_region_name" not in completion_kwargs:
+                region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+                if region:
+                    completion_kwargs["aws_region_name"] = region
+
+        if self.config.name.startswith("bedrock/") and self.model_max_output_tokens and "max_tokens" not in completion_kwargs:
+            completion_kwargs["max_tokens"] = self.model_max_output_tokens
 
         try:
             start_time = time.perf_counter()
             response: litellm.types.utils.ModelResponse = litellm.completion(
-                model=self.config.name,
+                model=self._litellm_call_model,
                 messages=messages,
                 temperature=self.config.temperature,
                 top_p=self.config.top_p,
                 api_version=self.config.api_version,
-                api_key=self.config.choose_api_key(),
-                **self.config.completion_kwargs,
+                api_key=api_key,
+                **completion_kwargs,
                 **extra_args,
             )
             end_time = time.perf_counter()
@@ -1108,6 +1176,7 @@ class LiteLLMModel(AbstractModel):
                     litellm.exceptions.APIError,
                     litellm.exceptions.ContentPolicyViolationError,
                     TypeError,
+                    KeyError,
                     litellm.exceptions.AuthenticationError,
                     ContentPolicyViolationError,
                     ModelConfigurationError,
@@ -1121,7 +1190,6 @@ class LiteLLMModel(AbstractModel):
         if n is None or n == 1:
             return result[0]
         return result
-
     def _history_to_messages(
         self,
         history: History,
@@ -1156,6 +1224,18 @@ class LiteLLMModel(AbstractModel):
         n_cache_control = str(messages).count("cache_control")
         self.logger.debug(f"n_cache_control: {n_cache_control}")
         return messages
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compatibility aliases
+# ---------------------------------------------------------------------------
+#
+# Some forks / older tests still refer to `GrazieModel`. In this repository we route
+# remote models through LiteLLM, so `GrazieModel` is effectively the same as
+# `LiteLLMModel` (and still provides the caching helpers used in unit tests).
+class GrazieModel(LiteLLMModel):
+    pass
+
 
 def get_model(args: ModelConfig, tools: ToolConfig) -> AbstractModel:
     """Returns correct model object given arguments and commands"""
