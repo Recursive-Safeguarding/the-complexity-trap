@@ -783,6 +783,73 @@ class LiteLLMModel(AbstractModel):
                 return f"openai/responses/{base_model}"
         return model_name
 
+    def _is_responses_api_model(self) -> bool:
+        """Check if the model uses OpenAI Responses API (gpt-5 series)."""
+        return "openai/responses/" in self._litellm_call_model
+
+    @staticmethod
+    def _transform_tools_for_responses_api(tools: list[dict]) -> list[dict]:
+        """Flatten nested tool schemas from Completion API to Responses API format."""
+        transformed_tools = []
+        for tool in tools:
+            if tool.get("type") == "function" and "function" in tool:
+                func = tool["function"]
+                transformed_tool = {
+                    "type": "function",
+                    "name": func.get("name"),
+                    "description": func.get("description", ""),
+                }
+                if "parameters" in func:
+                    transformed_tool["parameters"] = func["parameters"]
+                transformed_tools.append(transformed_tool)
+            else:
+                transformed_tools.append(tool)
+        return transformed_tools
+
+    def _call_responses_api(
+        self,
+        messages: list[dict],
+        completion_kwargs: dict,
+        extra_args: dict,
+        api_key: str,
+    ):
+        """Call OpenAI Responses API with proper parameter transformation."""
+        input_text = "\n".join([f"{msg['role']}: {msg.get('content', '')}" for msg in messages])
+
+        responses_kwargs = completion_kwargs.copy()
+        if "max_tokens" in responses_kwargs:
+            max_output_tokens = responses_kwargs.pop("max_tokens")
+        else:
+            max_output_tokens = self.model_max_output_tokens or 16
+
+        max_output_tokens = max(16, max_output_tokens)
+        responses_model = self._litellm_call_model.replace("openai/responses/", "")
+
+        # GPT-5 models don't support temperature/top_p parameters
+        responses_kwargs.pop("temperature", None)
+        responses_kwargs.pop("top_p", None)
+
+        return litellm.responses(
+            model=responses_model,
+            input=input_text,
+            max_output_tokens=max_output_tokens,
+            api_version=self.config.api_version,
+            api_key=api_key,
+            **responses_kwargs,
+            **extra_args,
+        )
+
+    @staticmethod
+    def _parse_responses_api_output(response) -> str:
+        """Extract text from Responses API output (handles list or string)."""
+        output_data = response.output
+        if isinstance(output_data, list):
+            return " ".join(
+                str(item.text if hasattr(item, 'text') else item)
+                for item in output_data
+            ).strip()
+        return str(output_data).strip()
+
     @property
     def instance_cost_limit(self) -> float:
         """Cost limit for the model. Returns 0 if there is no limit."""
@@ -883,7 +950,10 @@ class LiteLLMModel(AbstractModel):
             # Not assigned a default value in litellm, so only pass this if it's set
             extra_args["api_base"] = self.config.api_base
         if self.tools.use_function_calling:
-            extra_args["tools"] = self.tools.tools
+            tools_to_use = self.tools.tools
+            if self._is_responses_api_model():
+                tools_to_use = self._transform_tools_for_responses_api(tools_to_use)
+            extra_args["tools"] = tools_to_use
         if self.config.is_local_model and self.config.use_reasoning:
             extra_args["chat_template_kwargs"] = {"enable_thinking": True}
         # We need to always set max_tokens for anthropic models
@@ -912,18 +982,23 @@ class LiteLLMModel(AbstractModel):
             completion_kwargs["max_tokens"] = self.model_max_output_tokens
         try:
             start_time = time.perf_counter()
-            response: litellm.types.utils.ModelResponse = litellm.completion(  # type: ignore
-                model=self._litellm_call_model,
-                messages=messages,
-                temperature=self.config.temperature if temperature is None else temperature,
-                top_p=self.config.top_p,
-                api_version=self.config.api_version,
-                api_key=api_key,
-                fallbacks=self.config.fallbacks,
-                **completion_kwargs,
-                **extra_args,
-                n=n,
-            )
+
+            if self._is_responses_api_model():
+                response = self._call_responses_api(messages, completion_kwargs, extra_args, api_key)
+            else:
+                response: litellm.types.utils.ModelResponse = litellm.completion(  # type: ignore
+                    model=self._litellm_call_model,
+                    messages=messages,
+                    temperature=self.config.temperature if temperature is None else temperature,
+                    top_p=self.config.top_p,
+                    api_version=self.config.api_version,
+                    api_key=api_key,
+                    fallbacks=self.config.fallbacks,
+                    **completion_kwargs,
+                    **extra_args,
+                    n=n,
+                )
+
             end_time = time.perf_counter()
             inference_time_ms = (end_time - start_time) * 1000
         except litellm.exceptions.ContextWindowExceededError as e:
@@ -963,30 +1038,15 @@ class LiteLLMModel(AbstractModel):
                 self.logger.error(msg)
                 raise ModelConfigurationError(msg)
             cost = 0
-        choices: litellm.types.utils.Choices = response.choices  # type: ignore
-        n_choices = n if n is not None else 1
-        outputs = []
-        output_tokens = 0
-        for i in range(n_choices):
-            output = choices[i].message.content or ""
-            output_tokens += litellm.utils.token_counter(messages=[choices[i].message], 
-                                                        model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
-                                                        custom_tokenizer=self.custom_tokenizer)
-            output_dict = {"message": output}
 
-            internal_reasoning_content = None
-            internal_reasoning_content_tokens = 0
-            if (
-                    choices[i].model_extra and 
-                    'message' in choices[i].model_extra and 
-                    choices[i].model_extra['message'].model_extra and 
-                    'reasoning_content' in choices[i].model_extra['message'].model_extra and
-                    choices[i].model_extra['message'].model_extra['reasoning_content'] is not None
-                ):
-                internal_reasoning_content = choices[i].model_extra['message'].model_extra['reasoning_content']
-                internal_reasoning_content_tokens = litellm.utils.token_counter(text=internal_reasoning_content,
-                                                                                model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
-                                                                                custom_tokenizer=self.custom_tokenizer)
+        if self._is_responses_api_model():
+            output = self._parse_responses_api_output(response)
+
+            output_tokens = litellm.utils.token_counter(
+                text=output,
+                model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
+                custom_tokenizer=self.custom_tokenizer
+            )
 
             turn_statistics = TurnStatistics(
                 cost=cost,
@@ -994,20 +1054,66 @@ class LiteLLMModel(AbstractModel):
                     raw_input=input_tokens - cached_input_tokens,
                     cached_input=cached_input_tokens,
                     output=output_tokens,
-                    internal_reasoning=internal_reasoning_content_tokens
+                    internal_reasoning=0
                 ),
-                internal_reasoning=internal_reasoning_content,
+                internal_reasoning=None,
                 inference_time=inference_time_ms
             )
-            output_dict["turn_statistics"] = turn_statistics
-            
+
+            output_dict = {
+                "message": output,
+                "turn_statistics": turn_statistics,
+            }
             if self.tools.use_function_calling:
-                if response.choices[i].message.tool_calls:  # type: ignore
-                    tool_calls = [call.to_dict() for call in response.choices[i].message.tool_calls]  # type: ignore
-                else:
-                    tool_calls = []
-                output_dict["tool_calls"] = tool_calls
-            outputs.append(output_dict)
+                output_dict["tool_calls"] = []
+            outputs = [output_dict]
+
+        else:
+            choices: litellm.types.utils.Choices = response.choices  # type: ignore
+            n_choices = n if n is not None else 1
+            outputs = []
+            output_tokens = 0
+            for i in range(n_choices):
+                output = choices[i].message.content or ""
+                output_tokens += litellm.utils.token_counter(messages=[choices[i].message],
+                                                            model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
+                                                            custom_tokenizer=self.custom_tokenizer)
+                output_dict = {"message": output}
+
+                internal_reasoning_content = None
+                internal_reasoning_content_tokens = 0
+                if (
+                        choices[i].model_extra and
+                        'message' in choices[i].model_extra and
+                        choices[i].model_extra['message'].model_extra and
+                        'reasoning_content' in choices[i].model_extra['message'].model_extra and
+                        choices[i].model_extra['message'].model_extra['reasoning_content'] is not None
+                    ):
+                    internal_reasoning_content = choices[i].model_extra['message'].model_extra['reasoning_content']
+                    internal_reasoning_content_tokens = litellm.utils.token_counter(text=internal_reasoning_content,
+                                                                                    model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
+                                                                                    custom_tokenizer=self.custom_tokenizer)
+
+                turn_statistics = TurnStatistics(
+                    cost=cost,
+                    tokens=TokenStats(
+                        raw_input=input_tokens - cached_input_tokens,
+                        cached_input=cached_input_tokens,
+                        output=output_tokens,
+                        internal_reasoning=internal_reasoning_content_tokens
+                    ),
+                    internal_reasoning=internal_reasoning_content,
+                    inference_time=inference_time_ms
+                )
+                output_dict["turn_statistics"] = turn_statistics
+
+                if self.tools.use_function_calling:
+                    if response.choices[i].message.tool_calls:  # type: ignore
+                        tool_calls = [call.to_dict() for call in response.choices[i].message.tool_calls]  # type: ignore
+                    else:
+                        tool_calls = []
+                    output_dict["tool_calls"] = tool_calls
+                outputs.append(output_dict)
         
         self._update_stats(input_tokens=input_tokens, output_tokens=output_tokens, cost=cost, cached_input_tokens=cached_input_tokens)
     
@@ -1069,23 +1175,35 @@ class LiteLLMModel(AbstractModel):
 
         try:
             start_time = time.perf_counter()
-            response: litellm.types.utils.ModelResponse = litellm.completion(
-                model=self._litellm_call_model,
-                messages=messages,
-                temperature=self.config.temperature,
-                top_p=self.config.top_p,
-                api_version=self.config.api_version,
-                api_key=api_key,
-                **completion_kwargs,
-                **extra_args,
-            )
+
+            if self._is_responses_api_model():
+                response = self._call_responses_api(messages, completion_kwargs, extra_args, api_key)
+            else:
+                response: litellm.types.utils.ModelResponse = litellm.completion(
+                    model=self._litellm_call_model,
+                    messages=messages,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                    api_version=self.config.api_version,
+                    api_key=api_key,
+                    **completion_kwargs,
+                    **extra_args,
+                )
+
             end_time = time.perf_counter()
             inference_time_ms = (end_time - start_time) * 1000
         except Exception as e:
             self.logger.error(f"Error in summary query: {e}")
             raise
 
-        summary = response.choices[0].message.content or ""
+        if self._is_responses_api_model():
+            output_data = response.output
+            if isinstance(output_data, list):
+                summary = " ".join(str(item.text if hasattr(item, 'text') else item) for item in output_data).strip()
+            else:
+                summary = str(output_data).strip()
+        else:
+            summary = response.choices[0].message.content or ""
         
         try:
             if not self.config.is_local_model:
@@ -1118,17 +1236,18 @@ class LiteLLMModel(AbstractModel):
         
         internal_reasoning_content = None
         internal_reasoning_content_tokens = 0
-        if (
-                response.choices[0].model_extra and 
-                'message' in response.choices[0].model_extra and 
-                response.choices[0].model_extra['message'].model_extra and 
-                'reasoning_content' in response.choices[0].model_extra['message'].model_extra and 
-                response.choices[0].model_extra['message'].model_extra['reasoning_content'] is not None
-            ):
-            internal_reasoning_content = response.choices[0].model_extra['message'].model_extra['reasoning_content']
-            internal_reasoning_content_tokens = litellm.utils.token_counter(text=internal_reasoning_content,
-                                                                            model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
-                                                                            custom_tokenizer=self.custom_tokenizer)
+        if not self._is_responses_api_model():
+            if (
+                    response.choices[0].model_extra and
+                    'message' in response.choices[0].model_extra and
+                    response.choices[0].model_extra['message'].model_extra and
+                    'reasoning_content' in response.choices[0].model_extra['message'].model_extra and
+                    response.choices[0].model_extra['message'].model_extra['reasoning_content'] is not None
+                ):
+                internal_reasoning_content = response.choices[0].model_extra['message'].model_extra['reasoning_content']
+                internal_reasoning_content_tokens = litellm.utils.token_counter(text=internal_reasoning_content,
+                                                                                model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
+                                                                                custom_tokenizer=self.custom_tokenizer)
 
         summary_metadata = SummaryMetadata(
             summary=summary,
