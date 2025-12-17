@@ -1,0 +1,50 @@
+# Bedrock Qwen3-32B Bayesian search on verified-mini (50 curated instances)
+# 1 model × 4 strategies × 6 summarizers = 14 effective combinations
+# (raw/obs_masking ignore summarizer: 1+1+6+6=14)
+
+program: scripts/run_sweep.py
+method: bayes
+metric: {name: submission_rate, goal: maximize}
+early_terminate: {type: hyperband, min_iter: 3, eta: 2, s: 2}
+
+parameters:
+  model: {value: bedrock-qwen3-32b}
+  strategy: {values: [raw, observation_masking, llm_summary, hybrid]}
+  summarizer_model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.6, kimi-k2, minimax-m2, gpt-4o-mini]}
+
+  # observation_masking, hybrid
+  hp_obs_n: {distribution: int_uniform, min: 5, max: 20}
+
+  # llm_summary, hybrid
+  hp_sum_n: {distribution: int_uniform, min: 10, max: 40}
+  hp_sum_keep_m: {distribution: int_uniform, min: 5, max: 15}
+  hp_sum_static_checkpoint: {values: [true, false]}
+  hp_sum_extract_actions: {values: [true, false]}
+
+  instances_subset: {value: verified-mini}
+  instances_shuffle: {value: true}
+  instances_shuffle_seed: {value: 42}
+  call_limit: {value: 250}
+  cost_limit: {value: 3.0}
+  num_workers: {value: 1}
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --model=${model}
+  - --strategy=${strategy}
+  - --summarizer-model=${summarizer_model}
+  - --hp-obs-n=${hp_obs_n}
+  - --hp-sum-n=${hp_sum_n}
+  - --hp-sum-keep-m=${hp_sum_keep_m}
+  - --hp-sum-static-checkpoint=${hp_sum_static_checkpoint}
+  - --hp-sum-extract-actions=${hp_sum_extract_actions}
+  - --instances-subset=${instances_subset}
+  - --instances-shuffle=${instances_shuffle}
+  - --instances-shuffle-seed=${instances_shuffle_seed}
+  - --call-limit=${call_limit}
+  - --cost-limit=${cost_limit}
+  - --num-workers=${num_workers}
+  - --wandb
+  - --wandb-project=complexity-trap-bedrock-qwen
