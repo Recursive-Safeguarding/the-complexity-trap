@@ -7,7 +7,9 @@ set -e
 # Load .env if present
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "$SCRIPT_DIR/../.env" ]; then
-    export $(grep -v '^#' "$SCRIPT_DIR/../.env" | xargs)
+    set -a
+    source "$SCRIPT_DIR/../.env"
+    set +a
 fi
 
 VPS_IP="${VPS_IP:?Set VPS_IP in .env or as env var}"
@@ -20,7 +22,7 @@ ssh "$VPS_USER@$VPS_IP" 'bash -s' << 'REMOTE_SCRIPT'
 set -e
 echo "=== Installing system dependencies ==="
 apt-get update
-apt-get install -y git curl docker.io build-essential libssl-dev zlib1g-dev \
+apt-get install -y git curl tmux docker.io build-essential libssl-dev zlib1g-dev \
     libbz2-dev libreadline-dev libsqlite3-dev libncursesw5-dev xz-utils \
     tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev
 
@@ -41,7 +43,7 @@ cd the-complexity-trap
 echo "=== Setting up Python environment ==="
 uv venv .venv --python 3.12 --seed
 source .venv/bin/activate
-uv pip install -e .
+uv sync --extra dev  # Includes wandb, weave for sweeps
 
 echo "=== Setup complete! ==="
 REMOTE_SCRIPT

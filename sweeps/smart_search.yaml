@@ -1,28 +1,36 @@
-# Quick sanity check: 3 instances × 4 strategies
-# wandb sweep sweeps/quick_test.yaml && wandb agent <id>
+# Bayesian search with early stopping
+# 6 models × 4 strategies, 20 instances, $3/instance cap
+# wandb sweep sweeps/smart_search.yaml && wandb agent <id>
 
 program: scripts/run_sweep.py
-method: grid
+method: bayes
 
 metric:
   name: submission_rate
   goal: maximize
 
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  eta: 2
+  s: 2
+
 parameters:
   model:
     values:
       - deepseek-chat
-      - gpt-4o-mini
+      - bedrock-qwen3-32b
       - glm-4.6
       - kimi-k2
       - minimax-m2
+      - gpt-4o-mini
 
   strategy:
     values:
-      - raw
       - observation_masking
-      - llm_summary
       - hybrid
+      - llm_summary
+      - raw
 
   summarizer_model:
     value: same
@@ -31,7 +39,7 @@ parameters:
     value: verified
 
   instances_slice:
-    value: ":3"
+    value: ":20"
 
   instances_shuffle:
     value: true
@@ -40,10 +48,10 @@ parameters:
     value: 42
 
   call_limit:
-    value: 100
+    value: 250
 
   cost_limit:
-    value: 0.0
+    value: 3.0
 
   num_workers:
     value: 1
@@ -74,4 +82,4 @@ command:
   - ${num_workers}
   - --wandb
   - --wandb-project
-  - complexity-trap-test
+  - complexity-trap-repro
