@@ -39,36 +39,90 @@ STRATEGY_CONFIGS = {
 STRATEGY_ABBREV = {"raw": "raw", "observation_masking": "obs", "llm_summary": "sum", "hybrid": "hyb"}
 INSTANCE_ABBREV = {"verified-mini": "mini", "verified": "v", "lite": "lite"}
 
+# Model provider tags for filtering in WandB
+MODEL_PROVIDER = {
+    "bedrock-qwen3-32b": "bedrock",
+    "bedrock-nova-pro": "bedrock",
+    "bedrock-nova-lite": "bedrock",
+    "bedrock-claude-haiku-4.5": "bedrock",
+    "deepseek-chat": "deepseek",
+    "glm-4.6": "zhipu",
+    "kimi-k2": "moonshot",
+    "minimax-m2": "minimax",
+    "gpt-4o-mini": "openai",
+}
+
 
 def _safe_name(value: str) -> str:
     return value.replace("/", "_").replace(" ", "_")
 
 
+def build_tags(args) -> list[str]:
+    """Build WandB tags for filtering."""
+    tags = [
+        f"model:{args.model}",
+        f"provider:{MODEL_PROVIDER.get(args.model, 'other')}",
+        f"strategy:{args.strategy}",
+        f"subset:{args.instances_subset}",
+    ]
+
+    if args.strategy in ("llm_summary", "hybrid"):
+        if args.summarizer_model not in ("same", args.model):
+            tags.append(f"summarizer:{args.summarizer_model}")
+            tags.append(f"sum_provider:{MODEL_PROVIDER.get(args.summarizer_model, 'other')}")
+        else:
+            tags.append("summarizer:same")
+
+    # Hyperparams worth filtering on
+    if args.strategy in ("observation_masking", "hybrid") and args.hp_obs_n is not None:
+        tags.append(f"obs_n:{args.hp_obs_n}")
+    if args.strategy in ("llm_summary", "hybrid"):
+        if args.hp_sum_n is not None:
+            tags.append(f"sum_n:{args.hp_sum_n}")
+        if args.hp_sum_keep_m is not None:
+            tags.append(f"keep_m:{args.hp_sum_keep_m}")
+
+    return tags
+
+
 def build_run_name(args) -> str:
-    """Build descriptive run name for WandB and output directories."""
-    parts = [_safe_name(args.model), STRATEGY_ABBREV.get(args.strategy, args.strategy)]
+    """Build descriptive run name for WandB and output directories.
+
+    Format: model__strategy_summarizer_hparams__dataset
+    - Double underscore (__) separates major groups (model, strategy config, dataset)
+    - Single underscore (_) separates items within strategy config group
+    """
+    parts = []
+
+    # Group 1: Model
+    parts.append(_safe_name(args.model))
+
+    # Group 2: Strategy config (strategy + summarizer + hparams, all joined with single _)
+    strategy_parts = [STRATEGY_ABBREV.get(args.strategy, args.strategy)]
 
     if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model not in ("same", args.model):
-        parts.append(_safe_name(args.summarizer_model).replace("bedrock-", ""))
+        summarizer = _safe_name(args.summarizer_model).replace("bedrock-", "")
+        strategy_parts.append(summarizer)
 
-    hp_parts = []
+    # Add hyperparameters to strategy config
     if args.strategy == "observation_masking" and args.hp_obs_n is not None:
-        hp_parts.append(f"n={args.hp_obs_n}")
+        strategy_parts.append(f"n={args.hp_obs_n}")
     elif args.strategy == "llm_summary":
         if args.hp_sum_n is not None:
-            hp_parts.append(f"n={args.hp_sum_n}")
+            strategy_parts.append(f"n={args.hp_sum_n}")
         if args.hp_sum_keep_m is not None:
-            hp_parts.append(f"k={args.hp_sum_keep_m}")
+            strategy_parts.append(f"k={args.hp_sum_keep_m}")
     elif args.strategy == "hybrid":
         if args.hp_obs_n is not None:
-            hp_parts.append(f"o={args.hp_obs_n}")
+            strategy_parts.append(f"o={args.hp_obs_n}")
         if args.hp_sum_n is not None:
-            hp_parts.append(f"s={args.hp_sum_n}")
+            strategy_parts.append(f"s={args.hp_sum_n}")
         if args.hp_sum_keep_m is not None:
-            hp_parts.append(f"k={args.hp_sum_keep_m}")
-    if hp_parts:
-        parts.append("_".join(hp_parts))
+            strategy_parts.append(f"k={args.hp_sum_keep_m}")
 
+    parts.append("_".join(strategy_parts))
+
+    # Group 3: Dataset
     inst_part = INSTANCE_ABBREV.get(args.instances_subset, args.instances_subset)
     if args.instances_slice:
         inst_part += args.instances_slice.replace(":", "")
@@ -464,7 +518,7 @@ def main():
                 project=args.wandb_project,
                 entity=args.wandb_entity,
                 group=args.wandb_group,
-                tags=args.wandb_tags + [args.model, args.strategy],
+                tags=args.wandb_tags + build_tags(args),
                 config=config,
                 name=run_name,
             )
