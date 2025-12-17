@@ -1,6 +1,4 @@
-# Bedrock reproduction: Qwen3-32B × 4 strategies (paper configs)
-# Main model: bedrock-qwen3-32b (qwen.qwen3-32b-v1:0)
-# Summarizer: bedrock-nova-pro
+# Bedrock Qwen3-32B hybrid hyperparameter grid
 
 program: scripts/run_sweep.py
 method: grid
@@ -8,15 +6,19 @@ metric: {name: submission_rate, goal: maximize}
 
 parameters:
   model: {value: bedrock-qwen3-32b}
-  strategy: {values: [raw, observation_masking, llm_summary, hybrid]}
+  strategy: {value: hybrid}
   summarizer_model: {value: bedrock-nova-pro}
-  instances_subset: {value: verified}
-  instances_slice: {value: ":20"}
+  instances_subset: {value: verified-mini}
   instances_shuffle: {value: false}
   instances_shuffle_seed: {value: 42}
   call_limit: {value: 250}
   cost_limit: {value: 0.0}
   num_workers: {value: 1}
+  hp_obs_n: {values: [5, 10, 15, 20]}
+  hp_sum_n: {values: [15, 21, 30]}
+  hp_sum_keep_m: {values: [5, 10, 15]}
+  hp_sum_static_checkpoint: {value: true}
+  hp_sum_extract_actions: {value: false}
 
 command:
   - ${env}
@@ -26,11 +28,15 @@ command:
   - --strategy=${strategy}
   - --summarizer-model=${summarizer_model}
   - --instances-subset=${instances_subset}
-  - --instances-slice=${instances_slice}
   - --instances-shuffle=${instances_shuffle}
   - --instances-shuffle-seed=${instances_shuffle_seed}
   - --call-limit=${call_limit}
   - --cost-limit=${cost_limit}
   - --num-workers=${num_workers}
+  - --hp-obs-n=${hp_obs_n}
+  - --hp-sum-n=${hp_sum_n}
+  - --hp-sum-keep-m=${hp_sum_keep_m}
+  - --hp-sum-static-checkpoint=${hp_sum_static_checkpoint}
+  - --hp-sum-extract-actions=${hp_sum_extract_actions}
   - --wandb
-  - --wandb-project=complexity-trap-bedrock
+  - --wandb-project=complexity-trap-bedrock-hparams

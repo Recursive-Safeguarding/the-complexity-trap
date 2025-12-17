@@ -1,20 +1,23 @@
-# Quick sanity check: 6 models × 4 strategies × 3 instances
+# llm_summary hyperparameter search
 
 program: scripts/run_sweep.py
-method: grid
+method: bayes
 metric: {name: submission_rate, goal: maximize}
 
 parameters:
   model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.6, kimi-k2, minimax-m2, gpt-4o-mini]}
-  strategy: {values: [raw, observation_masking, llm_summary, hybrid]}
+  strategy: {value: llm_summary}
   summarizer_model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.6, kimi-k2, minimax-m2, gpt-4o-mini]}
-  instances_subset: {value: verified}
-  instances_slice: {value: ":3"}
+  instances_subset: {value: verified-mini}
   instances_shuffle: {value: true}
   instances_shuffle_seed: {value: 42}
-  call_limit: {value: 100}
+  call_limit: {value: 250}
   cost_limit: {value: 0.0}
   num_workers: {value: 1}
+  hp_sum_n: {distribution: int_uniform, min: 10, max: 40}
+  hp_sum_keep_m: {distribution: int_uniform, min: 5, max: 15}
+  hp_sum_static_checkpoint: {values: [true, false]}
+  hp_sum_extract_actions: {values: [true, false]}
 
 command:
   - ${env}
@@ -24,11 +27,14 @@ command:
   - --strategy=${strategy}
   - --summarizer-model=${summarizer_model}
   - --instances-subset=${instances_subset}
-  - --instances-slice=${instances_slice}
   - --instances-shuffle=${instances_shuffle}
   - --instances-shuffle-seed=${instances_shuffle_seed}
   - --call-limit=${call_limit}
   - --cost-limit=${cost_limit}
   - --num-workers=${num_workers}
+  - --hp-sum-n=${hp_sum_n}
+  - --hp-sum-keep-m=${hp_sum_keep_m}
+  - --hp-sum-static-checkpoint=${hp_sum_static_checkpoint}
+  - --hp-sum-extract-actions=${hp_sum_extract_actions}
   - --wandb
-  - --wandb-project=complexity-trap-test
+  - --wandb-project=complexity-trap-hparams

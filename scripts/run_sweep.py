@@ -36,6 +36,46 @@ STRATEGY_CONFIGS = {
     "hybrid": "config/default_no_demo_checkpoint_same_model_openhands_N=21_M=10_masking_M=10.yaml",
 }
 
+STRATEGY_ABBREV = {"raw": "raw", "observation_masking": "obs", "llm_summary": "sum", "hybrid": "hyb"}
+INSTANCE_ABBREV = {"verified-mini": "mini", "verified": "v", "lite": "lite"}
+
+
+def _safe_name(value: str) -> str:
+    return value.replace("/", "_").replace(" ", "_")
+
+
+def build_run_name(args) -> str:
+    """Build descriptive run name for WandB and output directories."""
+    parts = [_safe_name(args.model), STRATEGY_ABBREV.get(args.strategy, args.strategy)]
+
+    if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model not in ("same", args.model):
+        parts.append(_safe_name(args.summarizer_model).replace("bedrock-", ""))
+
+    hp_parts = []
+    if args.strategy == "observation_masking" and args.hp_obs_n is not None:
+        hp_parts.append(f"n={args.hp_obs_n}")
+    elif args.strategy == "llm_summary":
+        if args.hp_sum_n is not None:
+            hp_parts.append(f"n={args.hp_sum_n}")
+        if args.hp_sum_keep_m is not None:
+            hp_parts.append(f"k={args.hp_sum_keep_m}")
+    elif args.strategy == "hybrid":
+        if args.hp_obs_n is not None:
+            hp_parts.append(f"o={args.hp_obs_n}")
+        if args.hp_sum_n is not None:
+            hp_parts.append(f"s={args.hp_sum_n}")
+        if args.hp_sum_keep_m is not None:
+            hp_parts.append(f"k={args.hp_sum_keep_m}")
+    if hp_parts:
+        parts.append("_".join(hp_parts))
+
+    inst_part = INSTANCE_ABBREV.get(args.instances_subset, args.instances_subset)
+    if args.instances_slice:
+        inst_part += args.instances_slice.replace(":", "")
+    parts.append(inst_part)
+
+    return "__".join(parts)
+
 def _is_bedrock_model_name(model_name: str) -> bool:
     return model_name.startswith("bedrock/")
 
@@ -86,8 +126,8 @@ def parse_args():
     )
     parser.add_argument(
         "--instances-slice",
-        default=":10",
-        help="Slice of instances to run (e.g., ':5' for first 5)"
+        default=None,
+        help="Slice of instances to run (e.g., ':5' for first 5). Omit to run all."
     )
     parser.add_argument(
         "--instances-shuffle",
@@ -301,11 +341,14 @@ def build_sweagent_command(args) -> tuple[list[str], Path]:
         "--instances.type", "swe_bench",
         "--instances.subset", args.instances_subset,
         "--instances.split", "test",
-        "--instances.slice", args.instances_slice,
+    ]
+    if args.instances_slice:
+        cmd.extend(["--instances.slice", args.instances_slice])
+    cmd.extend([
         "--instances.shuffle", str(args.instances_shuffle),
         "--instances.shuffle_seed", str(args.instances_shuffle_seed),
         "--num_workers", str(args.num_workers),
-    ]
+    ])
     _add_model_args(cmd, model_args, "--agent.model")
 
     if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model not in ("same", args.model):
@@ -337,9 +380,6 @@ def find_latest_trajectory_dir(base_dir: Path, model_name: str) -> Path | None:
         return None
 
     return Path(max(matches, key=os.path.getmtime))
-
-def _safe_name(value: str) -> str:
-    return value.replace("/", "_").replace(" ", "_")
 
 
 def _run_sweagent(cmd: list[str], execution: str, wandb_hook=None) -> int:
@@ -394,7 +434,8 @@ def main():
     cmd, trajectories_base = build_sweagent_command(args)
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "user"
     ts = time.strftime("%Y-%m-%d_%H-%M-%S")
-    output_dir = Path("trajectories") / user / f"sweep_{ts}__{_safe_name(args.model)}__{args.strategy}"
+    run_name = build_run_name(args)
+    output_dir = Path("trajectories") / user / f"{run_name}__{ts}"
 
     if args.dry_run:
         cmd.extend(["--output_dir", str(output_dir)])
@@ -419,13 +460,6 @@ def main():
                 "call_limit": args.call_limit,
                 **get_relevant_hparams(args.strategy, args),
             }
-            strategy_part = args.strategy
-            if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model not in ("same", args.model):
-                strategy_part = f"{args.strategy}_{args.summarizer_model}"
-            parts = [args.model, strategy_part]
-            if args.instances_slice:
-                parts.append(args.instances_slice.replace(":", ""))
-            run_name = "__".join(parts)
             wandb_hook = WandBHook(
                 project=args.wandb_project,
                 entity=args.wandb_entity,

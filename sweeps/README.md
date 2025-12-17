@@ -21,10 +21,16 @@ wandb agent <your-entity>/complexity-trap-test/<sweep_id> --count 5
 
 ## Available Sweeps
 
-| Sweep | Models | Strategies | Instances | Est. Time | Est. Cost |
-|-------|--------|------------|-----------|-----------|-----------|
-| `quick_test.yaml` | 4 (budget) | 4 | 3 | ~2-3 hrs | ~$5-15 |
-| `bedrock_repro.yaml` | 1 (Bedrock) | 4 | 50 | varies | varies |
+| Sweep | Description | Models | Instances | Method |
+|-------|-------------|--------|-----------|--------|
+| `quick_test.yaml` | Fast sanity check | 5 | 3 | Grid |
+| `bedrock_repro.yaml` | Paper reproduction (Qwen3-32B) | 1 | 50 | Grid |
+| `models_mini.yaml` | Multi-model + all hyperparams on verified-mini | 6×4×7 | 50 | Bayes |
+| `models_verified_20.yaml` | Multi-model + all hyperparams on verified:20 | 6×4×7 | 20 | Bayes |
+| `hparams_obs_masking.yaml` | Hyperparameters for observation_masking | 4 | 20 | Grid |
+| `hparams_llm_summary.yaml` | Hyperparameters for llm_summary | 4 | 20 | Bayes |
+| `hparams_hybrid.yaml` | Hyperparameters for hybrid | 4 | 20 | Bayes |
+| `bedrock_hparams.yaml` | Bedrock hybrid hyperparameter grid | 1 | 50 | Grid |
 
 ## Strategies
 
@@ -206,3 +212,44 @@ API keys (in `.env` file):
   - `AWS_PROFILE=...` (if you use `~/.aws/config`)
 
 (Note: For many Bedrock models, LiteLLM doesn't have a cost-map entry. Keep `cost_limit: 0.0` in sweeps and rely on `call_limit` instead.)
+
+## Hyperparameter Tuning
+
+Each strategy has its own hyperparameters - use the **strategy-specific sweep files**:
+
+| Strategy | Sweep File | Hyperparameters |
+|----------|------------|-----------------|
+| `observation_masking` | `hparams_obs_masking.yaml` | `hp_obs_n` |
+| `llm_summary` | `hparams_llm_summary.yaml` | `hp_sum_n`, `hp_sum_keep_m`, `hp_sum_static_checkpoint`, `hp_sum_extract_actions` |
+| `hybrid` | `hparams_hybrid.yaml` | All of the above |
+
+### Parameter Reference
+
+| Parameter | Default | Range | Strategy |
+|-----------|---------|-------|----------|
+| `--hp-obs-n` | 10 | 5-20 | observation_masking, hybrid |
+| `--hp-sum-n` | 21 | 10-40 | llm_summary, hybrid |
+| `--hp-sum-keep-m` | 10 | 5-15 | llm_summary, hybrid |
+| `--hp-sum-static-checkpoint` | true | true/false | llm_summary, hybrid |
+| `--hp-sum-extract-actions` | false | true/false | llm_summary, hybrid |
+
+### Examples
+
+```bash
+# CLI: test specific hyperparameters
+python scripts/run_sweep.py --model deepseek-chat --strategy llm_summary \
+  --hp-sum-n 15 --hp-sum-keep-m 5 --instances-slice :10 --wandb
+
+# Sweep: observation_masking hyperparameters
+wandb sweep sweeps/hparams_obs_masking.yaml
+
+# Sweep: llm_summary hyperparameters
+wandb sweep sweeps/hparams_llm_summary.yaml
+
+# Sweep: hybrid hyperparameters (both)
+wandb sweep sweeps/hparams_hybrid.yaml
+```
+
+**Paper baselines** ([arXiv:2508.21433](https://arxiv.org/abs/2508.21433)):
+- Observation Masking (n=10): 54.8% solve rate, -52.7% cost
+- LLM-Summary (n=21, keep_m=10): 53.8% solve rate, -50.4% cost
