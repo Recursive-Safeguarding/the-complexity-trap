@@ -67,11 +67,9 @@ def build_tags(args) -> list[str]:
     ]
 
     if args.strategy in ("llm_summary", "hybrid"):
-        if args.summarizer_model not in ("same", args.model):
-            tags.append(f"summarizer:{args.summarizer_model}")
-            tags.append(f"sum_provider:{MODEL_PROVIDER.get(args.summarizer_model, 'other')}")
-        else:
-            tags.append("summarizer:same")
+        summarizer = args.model if args.summarizer_model == "same" else args.summarizer_model
+        tags.append(f"summarizer:{summarizer}")
+        tags.append(f"sum_provider:{MODEL_PROVIDER.get(summarizer, 'other')}")
 
     # Hyperparams worth filtering on
     if args.strategy in ("observation_masking", "hybrid") and args.hp_obs_n is not None:
@@ -100,9 +98,9 @@ def build_run_name(args) -> str:
     # Group 2: Strategy config (strategy + summarizer + hparams, all joined with single _)
     strategy_parts = [STRATEGY_ABBREV.get(args.strategy, args.strategy)]
 
-    if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model not in ("same", args.model):
-        summarizer = _safe_name(args.summarizer_model).replace("bedrock-", "")
-        strategy_parts.append(summarizer)
+    if args.strategy in ("llm_summary", "hybrid"):
+        sum_model = args.model if args.summarizer_model == "same" else args.summarizer_model
+        strategy_parts.append(_safe_name(sum_model).replace("bedrock-", ""))
 
     # Add hyperparameters to strategy config
     if args.strategy == "observation_masking" and args.hp_obs_n is not None:

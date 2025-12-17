@@ -16,7 +16,7 @@ parameters:
   num-workers: {value: 1}
   hp-obs-n: {values: [5, 10, 15]}
   hp-sum-n: {values: [15, 21, 28]}
-  hp-sum-keep-m: {values: [5, 10, 12]}
+  hp-sum-keep-m: {values: [7, 10, 12]}
   hp-sum-static-checkpoint: {value: true}
   hp-sum-extract-actions: {value: false}
 
