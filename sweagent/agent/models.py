@@ -711,8 +711,8 @@ class LiteLLMModel(AbstractModel):
         # Always copy config to avoid shared state between different instances
         self.config: GenericAPIModelConfig = args.model_copy(deep=True)
         self._litellm_call_model = self._resolve_litellm_call_model(self.config.name)
-        if self._litellm_call_model.startswith("openai/responses/gpt-5"):
-            litellm.drop_params = True
+        # NOTE: We explicitly handle unsupported params in _call_responses_api()
+        # instead of using the global litellm.drop_params flag
         self.stats = InstanceStats()
         self.tools = tools
         self.logger = get_logger("swea-lm", emoji="🤖")
@@ -811,10 +811,24 @@ class LiteLLMModel(AbstractModel):
         messages: list[dict],
         completion_kwargs: dict,
         extra_args: dict,
-        api_key: str,
-    ):
-        """Call OpenAI Responses API with proper parameter transformation."""
-        input_text = "\n".join([f"{msg['role']}: {msg.get('content', '')}" for msg in messages])
+        api_key: str | None,
+    ) -> Any:
+        """Call OpenAI Responses API with proper parameter transformation.
+
+        Args:
+            messages: Chat history in Completion API format
+            completion_kwargs: Additional completion parameters
+            extra_args: Extra LiteLLM arguments (tools, etc.)
+            api_key: OpenAI API key (can be None)
+
+        Returns:
+            LiteLLM response object from Responses API
+
+        Raises:
+            ValueError: If messages list is empty
+        """
+        if not messages:
+            raise ValueError("Messages list cannot be empty for Responses API")
 
         responses_kwargs = completion_kwargs.copy()
         if "max_tokens" in responses_kwargs:
@@ -829,9 +843,11 @@ class LiteLLMModel(AbstractModel):
         responses_kwargs.pop("temperature", None)
         responses_kwargs.pop("top_p", None)
 
+        # Pass messages as structured list (preserves role semantics and tool calls)
+        # Responses API accepts both string and list[dict] for input parameter
         return litellm.responses(
             model=responses_model,
-            input=input_text,
+            input=messages,
             max_output_tokens=max_output_tokens,
             api_version=self.config.api_version,
             api_key=api_key,
@@ -840,15 +856,44 @@ class LiteLLMModel(AbstractModel):
         )
 
     @staticmethod
-    def _parse_responses_api_output(response) -> str:
-        """Extract text from Responses API output (handles list or string)."""
+    def _parse_responses_api_output(response: Any) -> str:
+        """Extract text from Responses API output (handles list or string).
+
+        Args:
+            response: LiteLLM response object from Responses API
+
+        Returns:
+            Parsed text content from response
+
+        Raises:
+            AttributeError: If response doesn't have 'output' attribute
+            ValueError: If output is None or empty
+        """
+        if not hasattr(response, 'output'):
+            raise AttributeError(f"Response object missing 'output' attribute. Got type: {type(response)}")
+
         output_data = response.output
+
+        if output_data is None:
+            raise ValueError("Response output is None")
+
         if isinstance(output_data, list):
-            return " ".join(
+            if not output_data:
+                raise ValueError("Response output list is empty")
+
+            result = " ".join(
                 str(item.text if hasattr(item, 'text') else item)
                 for item in output_data
             ).strip()
-        return str(output_data).strip()
+
+            if not result:
+                raise ValueError("Parsed response output is empty string")
+            return result
+
+        result = str(output_data).strip()
+        if not result:
+            raise ValueError("Response output is empty string")
+        return result
 
     @property
     def instance_cost_limit(self) -> float:
@@ -1197,11 +1242,7 @@ class LiteLLMModel(AbstractModel):
             raise
 
         if self._is_responses_api_model():
-            output_data = response.output
-            if isinstance(output_data, list):
-                summary = " ".join(str(item.text if hasattr(item, 'text') else item) for item in output_data).strip()
-            else:
-                summary = str(output_data).strip()
+            summary = self._parse_responses_api_output(response)
         else:
             summary = response.choices[0].message.content or ""
         
