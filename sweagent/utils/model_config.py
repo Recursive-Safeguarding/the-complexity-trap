@@ -147,7 +147,7 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
     # AWS Bedrock (Converse API)
     # Auth: AWS_BEARER_TOKEN_BEDROCK, or standard AWS creds (env/profile/SSO)
     # Region: AWS_REGION or AWS_DEFAULT_REGION
-    "bedrock-qwen3-32b": ModelPreset("bedrock/converse/qwen.qwen3-32b-v1:0", description="Qwen3 32B", max_input_tokens=32768, max_output_tokens=8192),
+    "bedrock-qwen3-32b": ModelPreset("bedrock/converse/qwen.qwen3-32b-v1:0", description="Qwen3 32B", max_input_tokens=128000, max_output_tokens=128000),
     "bedrock-qwen3-coder-480b": ModelPreset("bedrock/converse/qwen.qwen3-coder-480b-a35b-v1:0", description="Qwen3 Coder 480B", max_input_tokens=262144, max_output_tokens=262144),
 
     "bedrock-claude-haiku-4.5": ModelPreset("bedrock/converse/anthropic.claude-haiku-4-5-20251001-v1:0", description="Claude Haiku 4.5", max_input_tokens=200000, max_output_tokens=64000),
