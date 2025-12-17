@@ -58,12 +58,17 @@ def _slice_spec_to_slice(slice_spec: str) -> slice:
 
 
 def _filter_batch_items(
-    instances: list[BatchInstance], *, filter_: str, slice_: str = "", shuffle: bool = False
+    instances: list[BatchInstance],
+    *,
+    filter_: str,
+    slice_: str = "",
+    shuffle: bool = False,
+    shuffle_seed: int = 42,
 ) -> list[BatchInstance]:
     if shuffle:
         instances = sorted(instances.copy(), key=lambda x: x.problem_statement.id)
-        random.seed(42)
-        random.shuffle(instances)
+        rng = random.Random(shuffle_seed)
+        rng.shuffle(instances)
     before_filter = len(instances)
     instances = [instance for instance in instances if re.match(filter_, instance.problem_statement.id)]
     after_filter = len(instances)
@@ -184,6 +189,8 @@ class InstancesFromFile(BaseModel, AbstractInstanceSource):
     shuffle: bool = False
     """Shuffle the instances (before filtering and slicing)."""
 
+    shuffle_seed: int = Field(default=42, description="Seed for deterministic shuffling (used when shuffle=true).")
+
     deployment: DeploymentConfig = Field(
         default_factory=lambda: DockerDeploymentConfig(image="python:3.11"),
         description="Deployment options.",
@@ -200,7 +207,9 @@ class InstancesFromFile(BaseModel, AbstractInstanceSource):
         instance_dicts = load_file(self.path)
         simple_instances = [SimpleBatchInstance.model_validate(instance_dict) for instance_dict in instance_dicts]
         instances = [instance.to_full_batch_instance(self.deployment) for instance in simple_instances]
-        return _filter_batch_items(instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle)
+        return _filter_batch_items(
+            instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle, shuffle_seed=self.shuffle_seed
+        )
 
     @property
     def id(self) -> str:
@@ -223,6 +232,8 @@ class InstancesFromHuggingFace(BaseModel, AbstractInstanceSource):
     shuffle: bool = False
     """Shuffle the instances (before filtering and slicing)."""
 
+    shuffle_seed: int = Field(default=42, description="Seed for deterministic shuffling (used when shuffle=true).")
+
     deployment: DeploymentConfig = Field(
         default_factory=lambda: DockerDeploymentConfig(image="python:3.11"),
     )
@@ -237,7 +248,9 @@ class InstancesFromHuggingFace(BaseModel, AbstractInstanceSource):
         ds: list[dict[str, Any]] = load_dataset(self.dataset_name, split=self.split)  # type: ignore
         simple_instances: list[SimpleBatchInstance] = [SimpleBatchInstance.model_validate(instance) for instance in ds]
         instances = [instance.to_full_batch_instance(self.deployment) for instance in simple_instances]
-        return _filter_batch_items(instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle)
+        return _filter_batch_items(
+            instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle, shuffle_seed=self.shuffle_seed
+        )
 
     @property
     def id(self) -> str:
@@ -279,6 +292,8 @@ class SWEBenchInstances(BaseModel, AbstractInstanceSource):
     shuffle: bool = False
     """Shuffle the instances (before filtering and slicing)."""
 
+    shuffle_seed: int = Field(default=42, description="Seed for deterministic shuffling (used when shuffle=true).")
+
     evaluate: bool = False
     """Run sb-cli to evaluate"""
 
@@ -310,7 +325,9 @@ class SWEBenchInstances(BaseModel, AbstractInstanceSource):
         instances = [
             SimpleBatchInstance.from_swe_bench(instance).to_full_batch_instance(self.deployment) for instance in ds
         ]
-        return _filter_batch_items(instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle)
+        return _filter_batch_items(
+            instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle, shuffle_seed=self.shuffle_seed
+        )
 
     @property
     def id(self) -> str:
@@ -333,13 +350,17 @@ class ExpertInstancesFromFile(BaseModel, AbstractInstanceSource):
     shuffle: bool = False
     """Shuffle the instances (before filtering and slicing)."""
 
+    shuffle_seed: int = Field(default=42, description="Seed for deterministic shuffling (used when shuffle=true).")
+
     type: Literal["expert_file"] = "expert_file"
     """Discriminator for (de)serialization/CLI. Do not change."""
 
     def get_instance_configs(self) -> list[BatchInstance]:
         instance_dicts = load_file(self.path)
         instances = [BatchInstance.model_validate(instance_dict) for instance_dict in instance_dicts]
-        return _filter_batch_items(instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle)
+        return _filter_batch_items(
+            instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle, shuffle_seed=self.shuffle_seed
+        )
 
     @property
     def id(self) -> str:
@@ -367,6 +388,8 @@ class SWESmithInstances(BaseModel, AbstractInstanceSource):
     shuffle: bool = False
     """Shuffle the instances (before filtering and slicing)."""
 
+    shuffle_seed: int = Field(default=42, description="Seed for deterministic shuffling (used when shuffle=true).")
+
     type: Literal["swesmith"] = "swesmith"
     """Discriminator for (de)serialization/CLI. Do not change."""
 
@@ -387,7 +410,9 @@ class SWESmithInstances(BaseModel, AbstractInstanceSource):
             )
             for instance_dict in instance_dicts
         ]
-        return _filter_batch_items(instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle)
+        return _filter_batch_items(
+            instances, filter_=self.filter, slice_=self.slice, shuffle=self.shuffle, shuffle_seed=self.shuffle_seed
+        )
 
     @property
     def id(self) -> str:
