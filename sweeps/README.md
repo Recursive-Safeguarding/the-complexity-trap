@@ -225,13 +225,30 @@ Each strategy has its own hyperparameters - use the **strategy-specific sweep fi
 
 ### Parameter Reference
 
-| Parameter | Default | Range | Strategy |
-|-----------|---------|-------|----------|
-| `--hp-obs-n` | 10 | 5-20 | observation_masking, hybrid |
-| `--hp-sum-n` | 21 | 10-40 | llm_summary, hybrid |
-| `--hp-sum-keep-m` | 10 | 5-15 | llm_summary, hybrid |
+| Parameter | Paper Value | Sweep Values | Strategy |
+|-----------|-------------|--------------|----------|
+| `--hp-obs-n` | **10** | 5, **10**, 15 | observation_masking, hybrid |
+| `--hp-sum-n` | **21** | 15, **21**, 28 | llm_summary, hybrid |
+| `--hp-sum-keep-m` | **10** | 7, **10**, 12 | llm_summary, hybrid |
 | `--hp-sum-static-checkpoint` | true | true/false | llm_summary, hybrid |
 | `--hp-sum-extract-actions` | false | true/false | llm_summary, hybrid |
+
+The paper used fixed values (o=10, s=21, k=10) without tuning. Our sweeps include these exact values while exploring nearby alternatives.
+
+### Constraints
+
+`k < s` required — you can't keep more messages than the summarization interval. With k=15 and s=10, you'd keep 15 messages but summarize every 10 turns, which is nonsense.
+
+Sweep configs enforce this: s_min=15, k_max=12.
+
+### Value Selection
+
+Centered around paper values, 1/3 chance each:
+- `hp-obs-n`: [5, **10**, 15]
+- `hp-sum-n`: [15, **21**, 28]
+- `hp-sum-keep-m`: [7, **10**, 12]
+
+~4% chance of exact paper config (o=10, s=21, k=10) for hybrid runs.
 
 ### Examples
 

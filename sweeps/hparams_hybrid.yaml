@@ -7,36 +7,23 @@ metric: {name: submission_rate, goal: maximize}
 parameters:
   model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.6, kimi-k2, minimax-m2, gpt-4o-mini]}
   strategy: {value: hybrid}
-  summarizer_model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.6, kimi-k2, minimax-m2, gpt-4o-mini]}
-  instances_subset: {value: verified-mini}
-  instances_shuffle: {value: true}
-  instances_shuffle_seed: {value: 42}
-  call_limit: {value: 250}
-  cost_limit: {value: 0.0}
-  num_workers: {value: 1}
-  hp_obs_n: {distribution: int_uniform, min: 5, max: 20}
-  hp_sum_n: {distribution: int_uniform, min: 10, max: 40}
-  hp_sum_keep_m: {distribution: int_uniform, min: 5, max: 15}
-  hp_sum_static_checkpoint: {values: [true, false]}
-  hp_sum_extract_actions: {values: [true, false]}
+  summarizer-model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.6, kimi-k2, minimax-m2, gpt-4o-mini]}
+  instances-subset: {value: verified-mini}
+  instances-shuffle: {value: true}
+  instances-shuffle-seed: {value: 42}
+  call-limit: {value: 250}
+  cost-limit: {value: 0.0}
+  num-workers: {value: 1}
+  hp-obs-n: {values: [5, 10, 15]}
+  hp-sum-n: {values: [15, 21, 28]}
+  hp-sum-keep-m: {values: [7, 10, 12]}
+  hp-sum-static-checkpoint: {values: [true, false]}
+  hp-sum-extract-actions: {values: [true, false]}
 
 command:
   - ${env}
   - python
   - ${program}
-  - --model=${model}
-  - --strategy=${strategy}
-  - --summarizer-model=${summarizer_model}
-  - --instances-subset=${instances_subset}
-  - --instances-shuffle=${instances_shuffle}
-  - --instances-shuffle-seed=${instances_shuffle_seed}
-  - --call-limit=${call_limit}
-  - --cost-limit=${cost_limit}
-  - --num-workers=${num_workers}
-  - --hp-obs-n=${hp_obs_n}
-  - --hp-sum-n=${hp_sum_n}
-  - --hp-sum-keep-m=${hp_sum_keep_m}
-  - --hp-sum-static-checkpoint=${hp_sum_static_checkpoint}
-  - --hp-sum-extract-actions=${hp_sum_extract_actions}
+  - ${args}
   - --wandb
   - --wandb-project=complexity-trap-hparams

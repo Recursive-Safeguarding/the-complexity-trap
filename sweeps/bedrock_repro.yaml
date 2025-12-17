@@ -9,28 +9,23 @@ metric: {name: submission_rate, goal: maximize}
 parameters:
   model: {value: bedrock-qwen3-32b}
   strategy: {values: [raw, observation_masking, llm_summary, hybrid]}
-  summarizer_model: {value: bedrock-nova-pro}
-  instances_subset: {value: verified}
-  instances_slice: {value: ":20"}
-  instances_shuffle: {value: false}
-  instances_shuffle_seed: {value: 42}
-  call_limit: {value: 250}
-  cost_limit: {value: 0.0}
-  num_workers: {value: 1}
+  summarizer-model: {value: bedrock-nova-pro}
+  instances-subset: {value: verified}
+  instances-slice: {value: ":20"}
+  instances-shuffle: {value: false}
+  instances-shuffle-seed: {value: 42}
+  call-limit: {value: 250}
+  cost-limit: {value: 0.0}
+  num-workers: {value: 1}
+  # Paper's values (o=10, s=21, k=10)
+  hp-obs-n: {value: 10}
+  hp-sum-n: {value: 21}
+  hp-sum-keep-m: {value: 10}
 
 command:
   - ${env}
   - python
   - ${program}
-  - --model=${model}
-  - --strategy=${strategy}
-  - --summarizer-model=${summarizer_model}
-  - --instances-subset=${instances_subset}
-  - --instances-slice=${instances_slice}
-  - --instances-shuffle=${instances_shuffle}
-  - --instances-shuffle-seed=${instances_shuffle_seed}
-  - --call-limit=${call_limit}
-  - --cost-limit=${cost_limit}
-  - --num-workers=${num_workers}
+  - ${args}
   - --wandb
   - --wandb-project=complexity-trap-bedrock

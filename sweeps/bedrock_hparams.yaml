@@ -7,36 +7,23 @@ metric: {name: submission_rate, goal: maximize}
 parameters:
   model: {value: bedrock-qwen3-32b}
   strategy: {value: hybrid}
-  summarizer_model: {value: bedrock-nova-pro}
-  instances_subset: {value: verified-mini}
-  instances_shuffle: {value: false}
-  instances_shuffle_seed: {value: 42}
-  call_limit: {value: 250}
-  cost_limit: {value: 0.0}
-  num_workers: {value: 1}
-  hp_obs_n: {values: [5, 10, 15, 20]}
-  hp_sum_n: {values: [15, 21, 30]}
-  hp_sum_keep_m: {values: [5, 10, 15]}
-  hp_sum_static_checkpoint: {value: true}
-  hp_sum_extract_actions: {value: false}
+  summarizer-model: {value: bedrock-nova-pro}
+  instances-subset: {value: verified-mini}
+  instances-shuffle: {value: false}
+  instances-shuffle-seed: {value: 42}
+  call-limit: {value: 250}
+  cost-limit: {value: 0.0}
+  num-workers: {value: 1}
+  hp-obs-n: {values: [5, 10, 15]}
+  hp-sum-n: {values: [15, 21, 28]}
+  hp-sum-keep-m: {values: [5, 10, 12]}
+  hp-sum-static-checkpoint: {value: true}
+  hp-sum-extract-actions: {value: false}
 
 command:
   - ${env}
   - python
   - ${program}
-  - --model=${model}
-  - --strategy=${strategy}
-  - --summarizer-model=${summarizer_model}
-  - --instances-subset=${instances_subset}
-  - --instances-shuffle=${instances_shuffle}
-  - --instances-shuffle-seed=${instances_shuffle_seed}
-  - --call-limit=${call_limit}
-  - --cost-limit=${cost_limit}
-  - --num-workers=${num_workers}
-  - --hp-obs-n=${hp_obs_n}
-  - --hp-sum-n=${hp_sum_n}
-  - --hp-sum-keep-m=${hp_sum_keep_m}
-  - --hp-sum-static-checkpoint=${hp_sum_static_checkpoint}
-  - --hp-sum-extract-actions=${hp_sum_extract_actions}
+  - ${args}
   - --wandb
   - --wandb-project=complexity-trap-bedrock-hparams
