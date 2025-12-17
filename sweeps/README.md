@@ -64,28 +64,104 @@ python scripts/run_sweep.py \
 
 ## Metrics Logged to WandB
 
-### Aggregate Metrics
-- `n_instances`: Number of SWE-bench instances run
-- `n_submitted`: Instances where agent submitted a patch
-- `submission_rate`: Fraction submitted (sweep optimization target)
-- `total_cost`: Total USD cost (agent + summarizer)
-- `avg_cost`: Average cost per instance
-- `total_agent_cost`: Agent model cost
-- `total_summary_cost`: Summarizer model cost
-- `summary_cost_fraction`: Fraction of cost from summarization
-- `total_turns` / `avg_turns`: Agent turns
-- `total_api_calls` / `avg_api_calls`: API calls
-- `total_raw_input_tokens`: Non-cached input tokens
-- `total_cached_input_tokens`: Cached input tokens
-- `total_output_tokens`: Output tokens
-- `cache_hit_rate`: Prompt caching efficiency
+X-axes are set via `wandb.define_metric()`:
+- `step/*`, `instance/*`, `cumulative/*` → `global_step` (agent turns)
+- `total_*`, `avg_*`, `exit/*` → `n_instances`
+
+### Per-Step Metrics (`global_step` x-axis)
+
+| Metric | Description |
+|--------|-------------|
+| `step` | Local step number within current instance (resets per instance) |
+| `step/cost` | Cost of this turn in USD |
+| `step/tokens_in` | Total input tokens (raw + cached) |
+| `step/tokens_out` | Output tokens generated |
+| `step/tokens_raw_input` | Non-cached input tokens (cost driver) |
+| `step/tokens_cached_input` | Cached input tokens (cost savings) |
+| `step/tokens_internal_reasoning` | Thinking tokens (o1, o3, DeepSeek-R1) |
+| `step/inference_time_ms` | Model response latency |
+| `step/execution_time_ms` | Environment command execution time |
+| `step/cache_hit_rate` | Fraction of input tokens from cache |
+
+`instance/*` variants reset per instance; `cumulative/*` accumulates across all.
+
+Additional `instance/*` and `cumulative/*` metrics:
+| Metric | Description |
+|--------|-------------|
+| `*/api_calls` | API call count |
+| `*/inference_time_ms` | Total model response time |
+| `*/execution_time_ms` | Total environment execution time |
+
+### Aggregate Metrics (`n_instances` x-axis)
+
+| Metric | Description |
+|--------|-------------|
+| `n_instances` | Number of SWE-bench instances run |
+| `n_submitted` | Instances that submitted a patch |
+| `submission_rate` | Fraction submitted |
+| `cache_hit_rate` | Prompt caching efficiency |
+| `avg_cost` | Average cost per instance |
+| `avg_turns` | Average agent turns per instance |
+| `avg_api_calls` | Average API calls per instance |
+| `avg_tokens_per_turn` | Token efficiency metric |
+| `total_turns` | Total agent turns |
+| `total_api_calls` | Total agent API calls |
+| `total_summary_api_calls` | Summarizer API calls |
+| `total_rloop_api_calls` | Retry loop API calls |
+
+### Cost Breakdown
+
+| Metric | Description |
+|--------|-------------|
+| `total_cost` | Total USD cost (agent + summarizer + rloop) |
+| `total_agent_cost` | Main agent model cost |
+| `total_summary_cost` | LLM-Summary model cost (if enabled) |
+| `total_rloop_cost` | Retry loop reviewer cost (if enabled) |
+| `summary_cost_fraction` | Summary cost as % of total |
+| `rloop_cost_fraction` | Retry loop cost as % of total |
+| `summary_api_fraction` | Summary API calls as % of total API calls |
+| `rloop_api_fraction` | Retry loop API calls as % of total API calls |
+
+### Token Breakdown
+
+| Metric | Description |
+|--------|-------------|
+| `total_raw_input_tokens` | Non-cached input tokens |
+| `total_cached_input_tokens` | Cached input tokens |
+| `total_output_tokens` | Output tokens |
+| `total_internal_reasoning_tokens` | Thinking tokens (o1, o3, R1) |
+| `total_summary_raw_input_tokens` | Summarizer non-cached input |
+| `total_summary_cached_input_tokens` | Summarizer cached input |
+| `total_summary_output_tokens` | Summarizer output tokens |
+
+### Exit Status Distribution (`exit/*`)
+
+Why instances terminated. For `"submitted (exit_cost)"`, the category is `exit_cost` (the actual reason); `n_submitted` still counts it as submitted.
+
+| Metric | Description |
+|--------|-------------|
+| `exit/submitted` | Submitted, exited normally |
+| `exit/exit_cost` | Cost limit hit |
+| `exit/exit_context` | Context window exceeded |
+| `exit/exit_timeout` | Execution or command timeout |
+| `exit/exit_format` | Repeated format/syntax errors |
+| `exit/exit_api` | API errors (rate limits, etc.) |
+| `exit/exit_environment` | Docker/environment errors |
+| `exit/exit_forfeit` | Agent forfeited |
+| `exit/exit_command` | Exit command issued |
+| `exit/exit_error` | Other runtime errors |
+| `exit/other` | Uncategorized exit status |
 
 ### Per-Instance Table
-A WandB Table (`instances`) with per-instance breakdown:
-- `instance_id`, `exit_status`, `submitted`, `n_turns`
-- `total_cost`, `agent_cost`, `summary_cost`
-- `agent_api_calls`, `summary_api_calls`
-- Token counts (raw_input, cached_input, output, summary_tokens)
+
+A WandB Table (`instances`) with per-instance details:
+- `instance_id`, `exit_status`, `exit_category`, `submitted`, `n_turns`
+- `total_cost`, `agent_cost`, `summary_cost`, `rloop_cost`
+- `agent_api_calls`, `summary_api_calls`, `rloop_api_calls`
+- `raw_input_tokens`, `cached_input_tokens`, `output_tokens`, `internal_reasoning_tokens`
+- `summary_raw_input_tokens`, `summary_cached_input_tokens`, `summary_output_tokens`
+- `cache_hit_rate` (per-instance)
+- `review_score` (if using ScoreRetryLoop)
 
 ## Weave (LLM Tracing)
 

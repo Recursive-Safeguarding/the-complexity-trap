@@ -292,12 +292,14 @@ def main():
                 "instances_slice": args.instances_slice,
                 "call_limit": args.call_limit,
             }
+            run_name = f"{args.model}__{args.strategy}"
             wandb_hook = WandBHook(
                 project=args.wandb_project,
                 entity=args.wandb_entity,
                 group=args.wandb_group,
                 tags=args.wandb_tags + [args.model, args.strategy],
                 config=config,
+                name=run_name,
             )
         except ImportError:
             print("WARNING: wandb not installed, skipping WandB logging")

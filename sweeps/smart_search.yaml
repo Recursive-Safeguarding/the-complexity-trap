@@ -32,54 +32,33 @@ parameters:
       - llm_summary
       - raw
 
-  summarizer_model:
+  summarizer-model:
     value: same
 
-  instances_subset:
+  instances-subset:
     value: verified
 
-  instances_slice:
+  instances-slice:
     value: ":20"
 
-  instances_shuffle:
+  instances-shuffle:
     value: true
 
-  instances_shuffle_seed:
+  instances-shuffle-seed:
     value: 42
 
-  call_limit:
+  call-limit:
     value: 250
 
-  cost_limit:
+  cost-limit:
     value: 3.0
 
-  num_workers:
+  num-workers:
     value: 1
 
 command:
   - ${env}
   - python
   - ${program}
-  - --model
-  - ${model}
-  - --strategy
-  - ${strategy}
-  - --summarizer-model
-  - ${summarizer_model}
-  - --instances-subset
-  - ${instances_subset}
-  - --instances-slice
-  - ${instances_slice}
-  - --instances-shuffle
-  - ${instances_shuffle}
-  - --instances-shuffle-seed
-  - ${instances_shuffle_seed}
-  - --call-limit
-  - ${call_limit}
-  - --cost-limit
-  - ${cost_limit}
-  - --num-workers
-  - ${num_workers}
+  - ${args}
   - --wandb
-  - --wandb-project
-  - complexity-trap-repro
