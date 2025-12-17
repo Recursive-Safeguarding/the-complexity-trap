@@ -50,6 +50,11 @@ except ImportError:
 
 litellm.suppress_debug_info = True
 
+from sweagent.utils.model_config import CUSTOM_MODEL_PRICING
+try:
+    litellm.register_model(model_cost=CUSTOM_MODEL_PRICING)
+except Exception:
+    pass
 
 _THREADS_THAT_USED_API_KEYS = []
 """Keeps track of thread orders so that we can choose the same API key for the same thread."""

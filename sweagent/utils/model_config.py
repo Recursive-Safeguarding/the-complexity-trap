@@ -169,6 +169,46 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
 }
 
 
+# Coding plan models (monthly subscription, not per-token)
+CUSTOM_MODEL_PRICING: dict[str, dict] = {
+    "anthropic/kimi-for-coding": {
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "max_tokens": 262144,
+        "litellm_provider": "anthropic",
+        "mode": "chat",
+    },
+    "anthropic/glm-4.6": {
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "max_tokens": 200000,
+        "litellm_provider": "anthropic",
+        "mode": "chat",
+    },
+    "glm-4.6": {
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "max_tokens": 200000,
+        "litellm_provider": "anthropic",
+        "mode": "chat",
+    },
+    "openai/MiniMax-M2": {
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "max_tokens": 204800,
+        "litellm_provider": "openai",
+        "mode": "chat",
+    },
+    "MiniMax-M2": {
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "max_tokens": 204800,
+        "litellm_provider": "openai",
+        "mode": "chat",
+    },
+}
+
+
 def get_model_args(model_key: str) -> dict[str, Any]:
     """Return CLI args for a model preset."""
     preset = MODEL_PRESETS.get(model_key)
