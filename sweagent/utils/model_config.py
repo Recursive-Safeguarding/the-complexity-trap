@@ -114,8 +114,8 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
     ),
 
     # DeepSeek
-    "deepseek-chat": ModelPreset("deepseek/deepseek-chat", api_base="https://api.deepseek.com/v1", api_key_var="DEEPSEEK_API_KEY", description="DeepSeek V3"),
-    "deepseek-reasoner": ModelPreset("deepseek/deepseek-reasoner", api_base="https://api.deepseek.com/v1", api_key_var="DEEPSEEK_API_KEY", description="DeepSeek R1", supports_function_calling=False),
+    "deepseek-chat": ModelPreset("deepseek/deepseek-chat", api_base="https://api.deepseek.com/v1", api_key_var="DEEPSEEK_API_KEY", description="DeepSeek V3", max_input_tokens=128000, max_output_tokens=8192),
+    "deepseek-reasoner": ModelPreset("deepseek/deepseek-reasoner", api_base="https://api.deepseek.com/v1", api_key_var="DEEPSEEK_API_KEY", description="DeepSeek R1", supports_function_calling=False, max_input_tokens=128000, max_output_tokens=8192),
 
     # Anthropic
     "claude-sonnet-4.5": ModelPreset("claude-sonnet-4-5-20250929", api_key_var="ANTHROPIC_API_KEY", description="Claude Sonnet 4.5"),
@@ -123,14 +123,14 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
     "claude-opus-4.5": ModelPreset("claude-opus-4-5-20251101", api_key_var="ANTHROPIC_API_KEY", description="Claude Opus 4.5"),
 
     # GLM (Z.AI endpoint)
-    "glm-4.6": ModelPreset("anthropic/glm-4.6", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.6", max_input_tokens=128000, max_output_tokens=8192),
-    "glm-4-plus": ModelPreset("anthropic/glm-4-plus", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4 Plus", max_input_tokens=128000, max_output_tokens=8192),
+    "glm-4.6": ModelPreset("anthropic/glm-4.6", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.6 (355B MoE, 32B active)", max_input_tokens=200000, max_output_tokens=131072),
+    "glm-4.5-air": ModelPreset("anthropic/glm-4.5-air", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.5 Air", max_input_tokens=128000, max_output_tokens=16384),
 
     # MiniMax
-    "minimax-m2": ModelPreset("openai/MiniMax-M2", api_base="https://api.minimax.io/v1", api_key_var="MINIMAX_API_KEY", description="MiniMax M2", max_input_tokens=1000000, max_output_tokens=16384),
+    "minimax-m2": ModelPreset("openai/MiniMax-M2", api_base="https://api.minimax.io/v1", api_key_var="MINIMAX_API_KEY", description="MiniMax M2 (230B MoE, 10B active)", max_input_tokens=204800, max_output_tokens=196608),
 
     # Kimi / Moonshot
-    "kimi-k2": ModelPreset("anthropic/kimi-for-coding", api_base="https://api.kimi.com/coding/", api_key_var="MOONSHOT_API_KEY", description="Kimi K2", max_input_tokens=131072, max_output_tokens=8192),
+    "kimi-k2": ModelPreset("anthropic/kimi-for-coding", api_base="https://api.kimi.com/coding/", api_key_var="MOONSHOT_API_KEY", description="Kimi K2 (1T MoE, 32B active)", max_input_tokens=262144, max_output_tokens=32768),
     "kimi-k2-free": ModelPreset("openrouter/moonshotai/kimi-k2:free", api_key_var="OPENROUTER_API_KEY", description="Kimi K2 (OpenRouter free)"),
 
     # Vertex AI
@@ -147,8 +147,8 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
     # AWS Bedrock (Converse API)
     # Auth: AWS_BEARER_TOKEN_BEDROCK, or standard AWS creds (env/profile/SSO)
     # Region: AWS_REGION or AWS_DEFAULT_REGION
-    "bedrock-qwen3-32b": ModelPreset("bedrock/converse/qwen.qwen3-32b-v1:0", description="Qwen3 32B", max_input_tokens=32000, max_output_tokens=4096),
-    "bedrock-qwen3-coder-480b": ModelPreset("bedrock/converse/qwen.qwen3-coder-480b-a35b-v1:0", description="Qwen3 Coder 480B", max_input_tokens=262144, max_output_tokens=66536),
+    "bedrock-qwen3-32b": ModelPreset("bedrock/converse/qwen.qwen3-32b-v1:0", description="Qwen3 32B", max_input_tokens=32768, max_output_tokens=8192),
+    "bedrock-qwen3-coder-480b": ModelPreset("bedrock/converse/qwen.qwen3-coder-480b-a35b-v1:0", description="Qwen3 Coder 480B", max_input_tokens=262144, max_output_tokens=262144),
 
     "bedrock-claude-haiku-4.5": ModelPreset("bedrock/converse/anthropic.claude-haiku-4-5-20251001-v1:0", description="Claude Haiku 4.5", max_input_tokens=200000, max_output_tokens=64000),
     "bedrock-claude-haiku-4.5-us": ModelPreset("bedrock/converse/us.anthropic.claude-haiku-4-5-20251001-v1:0", description="Claude Haiku 4.5 (US)", max_input_tokens=200000, max_output_tokens=64000),
