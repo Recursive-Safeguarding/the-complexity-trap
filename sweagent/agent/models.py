@@ -992,10 +992,23 @@ class LiteLLMModel(AbstractModel):
             original_count = len(messages)
             original_tokens = input_tokens
 
-            while input_tokens > self.model_max_input_tokens and len(messages) > 2:
-                messages.pop(1)  # drop oldest non-system msg
+            # batch-estimate and drop (avoids O(n²))
+            excess = input_tokens - self.model_max_input_tokens
+            droppable = len(messages) - 2  # keep system + at least 1 msg
+            if droppable > 0:
+                avg_tokens_per_msg = input_tokens / len(messages)
+                est_drop = min(int(excess / avg_tokens_per_msg) + 1, droppable)
+                del messages[1:1 + est_drop]
 
-                # recalculate tokens
+            # recalculate and fine-tune if still over
+            messages_no_cc = [{k: v for k, v in m.items() if k != "cache_control"} for m in messages]
+            input_tokens = litellm.utils.token_counter(
+                messages=messages_no_cc,
+                model=self.custom_tokenizer.get('identifier', self.config.name) if self.custom_tokenizer else self.config.name,
+                custom_tokenizer=self.custom_tokenizer
+            )
+            while input_tokens > self.model_max_input_tokens and len(messages) > 2:
+                messages.pop(1)
                 messages_no_cc = [{k: v for k, v in m.items() if k != "cache_control"} for m in messages]
                 input_tokens = litellm.utils.token_counter(
                     messages=messages_no_cc,
@@ -1014,7 +1027,7 @@ class LiteLLMModel(AbstractModel):
                 try:
                     cached_input_tokens = self._calculate_cached_tokens(messages)
                 except Exception as e:
-                    self.logger.debug(f"Error recalculating cached tokens after truncation: {e}")
+                    self.logger.debug(f"cached token recount failed: {e}")
                     cached_input_tokens = 0
 
             # sync messages_no_cache_control
