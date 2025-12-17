@@ -477,6 +477,11 @@ class DefaultAgent(AbstractAgent):
         self._always_require_zero_exit_code = _always_require_zero_exit_code
         self.name = name
         self.model = model
+        self.stats = stats or getattr(model, "stats", None) or InstanceStats()
+        try:
+            self.model.stats = self.stats  # type: ignore[attr-defined]
+        except Exception:
+            pass
         self.templates = templates
         self.tools = tools
         if isinstance(self.model, HumanThoughtModel):
@@ -519,8 +524,10 @@ class DefaultAgent(AbstractAgent):
         # model config, because it lives on as a property in the model, tools, etc.
         config = config.model_copy(deep=True)
         model = get_model(config.model, config.tools)
-        shared_stats = {}
-        shared_stats['total_agent_api_calls'] = 0
+        shared_instance_stats = InstanceStats()
+        model.stats = shared_instance_stats
+
+        shared_stats: dict[str, Any] = {"total_agent_api_calls": 0}
         model.shared_stats = shared_stats
 
         if config.summary_model.name == "reuse-agent-model":
@@ -530,6 +537,7 @@ class DefaultAgent(AbstractAgent):
             )
         else:
             summary_model = get_model(config.summary_model, config.tools)
+            summary_model.stats = shared_instance_stats
             summary_model.shared_stats = shared_stats
             get_logger("swea-agent", emoji="🤠").info(
                 f"Using specialist summarization model: {config.summary_model.name}"
@@ -547,6 +555,7 @@ class DefaultAgent(AbstractAgent):
             model=model,
             max_requeries=config.max_requeries,
             action_sampler_config=config.action_sampler,
+            stats=shared_instance_stats,
         )
 
     def add_hook(self, hook: AbstractAgentHook) -> None:
@@ -1074,7 +1083,7 @@ class DefaultAgent(AbstractAgent):
             else:
                 output = self.model.query(history)  # type: ignore
             step.output = output["message"]
-            step.turn_statistics = output["turn_statistics"]
+            step.turn_statistics = output.get("turn_statistics")
             # todo: Can't I override the parser in __init__?
             step.thought, step.action = self.tools.parse_actions(output)
             self.model.update_cached_context(history=history, content=output['message'], model_type="agent", action=step.action, thought=step.thought)
@@ -1291,7 +1300,10 @@ class DefaultAgent(AbstractAgent):
         self.info["agent_model_stats"] = self.model.stats.model_dump()
         should_dump_summary_model_stats = self._uses_llm_summaries and (self._llm_summary_processor._model is not self.model)
         self.info["summary_model_stats"] = self._llm_summary_processor._model.stats.model_dump() if should_dump_summary_model_stats else None
-        self.info["model_stats"] = (self.model.stats + self._llm_summary_processor._model.stats).model_dump() if should_dump_summary_model_stats else self.info["agent_model_stats"]
+        if should_dump_summary_model_stats and (self._llm_summary_processor._model.stats is not self.model.stats):
+            self.info["model_stats"] = (self.model.stats + self._llm_summary_processor._model.stats).model_dump()
+        else:
+            self.info["model_stats"] = self.info["agent_model_stats"]
         
         self.add_step_to_trajectory(step_output)
 
