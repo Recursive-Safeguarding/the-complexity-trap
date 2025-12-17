@@ -23,6 +23,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock, Thread, Event
 import yaml
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:
+    pass
+
 # Logger will be configured dynamically
 logger = logging.getLogger(__name__)
 
@@ -316,7 +323,7 @@ class ExperimentConfig:
 
 port = 65482
 
-experiments = [
+LOCAL_EXPERIMENTS = [
     ExperimentConfig(
         runs=1,
         run_id="local-Qwen3-32B_thinking-baseline_raw-collect_reasoning-retry_errors-verified-500",
@@ -391,6 +398,93 @@ experiments = [
         )
     ),
 ]
+
+
+def build_bedrock_repro_experiments(
+    *,
+    runs: int = 1,
+    num_workers: int = 1,
+    instances_slice: str | None = None,
+    summarizer_model: str = "bedrock-nova-pro",
+) -> list[ExperimentConfig]:
+    """Paper-style 4-pack (raw/masking/summary/hybrid) on AWS Bedrock.
+
+    Main model: Qwen3 32B on Bedrock
+    Summarizer: Amazon Nova Pro on Bedrock (temporary Gemini Flash substitute).
+    """
+    # Import here so the local suite doesn't require this module to exist.
+    from sweagent.utils.model_config import get_model_args
+
+    agent_args = get_model_args("bedrock-qwen3-32b")
+    summarizer_args = get_model_args(summarizer_model)
+
+    agent_model = ModelConfig(
+        name=agent_args["name"],
+        temperature=0.8,
+        per_instance_cost_limit=0,
+        per_instance_call_limit=250,
+        total_cost_limit=0.0,
+        max_input_tokens=agent_args.get("max_input_tokens"),
+        max_output_tokens=agent_args.get("max_output_tokens"),
+        completion_kwargs='{"timeout": "600"}',
+    )
+
+    summary_model = ModelConfig(
+        name=summarizer_args["name"],
+        temperature=0.0,
+        per_instance_cost_limit=0,
+        per_instance_call_limit=0,
+        total_cost_limit=0.0,
+        max_input_tokens=summarizer_args.get("max_input_tokens"),
+        max_output_tokens=summarizer_args.get("max_output_tokens"),
+        completion_kwargs='{"timeout": "600"}',
+    )
+
+    base_extra_args: dict[str, Any] = {}
+    if instances_slice:
+        base_extra_args["instances.slice"] = instances_slice
+
+    return [
+        ExperimentConfig(
+            runs=runs,
+            run_id="bedrock-qwen3-32b-agent-t_0.8-baseline_raw-verified-500",
+            config="config/default_no_demo_raw.yaml",
+            num_workers=num_workers,
+            agent_model=agent_model,
+            extra_args=dict(base_extra_args),
+        ),
+        ExperimentConfig(
+            runs=runs,
+            run_id="bedrock-qwen3-32b-agent-t_0.8-baseline_N_1_M_10-verified-500",
+            config="config/default_no_demo_N=1_M=10.yaml",
+            num_workers=num_workers,
+            agent_model=agent_model,
+            extra_args=dict(base_extra_args),
+        ),
+        ExperimentConfig(
+            runs=runs,
+            run_id="bedrock-qwen3-32b-agent-t_0.8-turn-summaries-t_0-N_21_M_10_openhands-summarizer_haiku45-verified-500",
+            config="config/default_no_demo_checkpoint_same_model_openhands_N=21_M=10.yaml",
+            num_workers=num_workers,
+            agent_model=agent_model,
+            summary_model=summary_model,
+            extra_args=dict(base_extra_args),
+        ),
+        ExperimentConfig(
+            runs=runs,
+            run_id="bedrock-qwen3-32b-agent-t_0.8-hybrid-N_21_M_10_masking_M_10_openhands-summarizer_haiku45-verified-500",
+            config="config/default_no_demo_checkpoint_same_model_openhands_N=21_M=10_masking_M=10.yaml",
+            num_workers=num_workers,
+            agent_model=agent_model,
+            summary_model=summary_model,
+            extra_args=dict(base_extra_args),
+        ),
+    ]
+
+
+# Global experiments list used by the worker threads. This is overridden in main()
+# based on CLI flags (e.g., to switch from local vLLM to Bedrock reproduction).
+experiments = LOCAL_EXPERIMENTS
 
 # Shared queue for passing completed experiments to evaluation workers
 completed_experiments_queue = Queue()
@@ -759,7 +853,7 @@ def evaluation_worker(total_evaluations: int, completed_evaluations: Dict[str, i
             else:
                 logger.info("🏁 Evaluation worker finished")
 
-def run_concurrent_orchestration():
+def run_concurrent_orchestration(*, max_local_experiments: int = 1, max_remote_experiments: int = 1):
     """Main orchestration function that runs experiments and evaluations concurrently."""
     logger.info("🎬 Starting concurrent experiment and evaluation orchestration")
     
@@ -804,7 +898,7 @@ def run_concurrent_orchestration():
     # Start experiment worker in a separate thread
     experiment_thread = Thread(
         target=experiment_worker, 
-        args=(experiment_queue, total_experiments, completed_experiments),
+        args=(experiment_queue, total_experiments, completed_experiments, max_local_experiments, max_remote_experiments),
         daemon=False  # Changed from daemon=True to allow proper cleanup
     )
     experiment_thread.start()
@@ -884,6 +978,49 @@ def main():
     """Main function to run the orchestrator."""
     parser = argparse.ArgumentParser(description="Orchestrate SWE-agent experiments with concurrent evaluations")
     parser.add_argument(
+        "--suite",
+        choices=["local", "bedrock_repro"],
+        default="local",
+        help="Experiment suite to run (default: local).",
+    )
+    parser.add_argument(
+        "--instances-slice",
+        default=None,
+        help="Optional SWE-bench slice override (e.g. ':10' for a sanity run). Only applied for bedrock_repro.",
+    )
+    parser.add_argument(
+        "--summarizer-model",
+        default="bedrock-nova-pro",
+        help=(
+            "Model preset key to use for the summarizer in the bedrock_repro suite "
+            "(default: bedrock-nova-pro)."
+        ),
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="Repeat each experiment N times (default: 1). Only applied for bedrock_repro.",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help="Parallel workers per experiment (default: 1). Only applied for bedrock_repro.",
+    )
+    parser.add_argument(
+        "--max-local-experiments",
+        type=int,
+        default=1,
+        help="Max concurrent local experiments (default: 1).",
+    )
+    parser.add_argument(
+        "--max-remote-experiments",
+        type=int,
+        default=1,
+        help="Max concurrent remote experiments (default: 1).",
+    )
+    parser.add_argument(
         "--log-level", 
         choices=["DEBUG", "INFO", "WARNING", "ERROR"], 
         default="INFO",
@@ -909,7 +1046,28 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    run_concurrent_orchestration()
+    # Select suite
+    global experiments
+    if args.suite == "bedrock_repro":
+        experiments = build_bedrock_repro_experiments(
+            runs=args.runs,
+            num_workers=args.num_workers,
+            instances_slice=args.instances_slice,
+            summarizer_model=args.summarizer_model,
+        )
+        logger.info(
+            f"📋 Selected suite: bedrock_repro (experiments={len(experiments)}, runs={args.runs}, "
+            f"instances_slice={args.instances_slice or 'FULL'}, num_workers={args.num_workers}, "
+            f"summarizer_model={args.summarizer_model})"
+        )
+    else:
+        experiments = LOCAL_EXPERIMENTS
+        logger.info(f"📋 Selected suite: local (experiments={len(experiments)})")
+
+    run_concurrent_orchestration(
+        max_local_experiments=args.max_local_experiments,
+        max_remote_experiments=args.max_remote_experiments,
+    )
 
 if __name__ == "__main__":
     main()
