@@ -34,16 +34,56 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
     # OpenAI
     "gpt-4o": ModelPreset("gpt-4o", api_key_var="OPENAI_API_KEY", description="GPT-4o"),
     "gpt-4o-mini": ModelPreset("gpt-4o-mini", api_key_var="OPENAI_API_KEY", description="GPT-4o Mini"),
-    "gpt-5": ModelPreset("gpt-5", api_key_var="OPENAI_API_KEY", description="GPT-5", max_input_tokens=400000, max_output_tokens=128000),
-    "gpt-5-mini": ModelPreset("gpt-5-mini", api_key_var="OPENAI_API_KEY", description="GPT-5 Mini", max_input_tokens=400000, max_output_tokens=128000),
-    "gpt-5-nano": ModelPreset("gpt-5-nano", api_key_var="OPENAI_API_KEY", description="GPT-5 Nano", max_input_tokens=400000, max_output_tokens=128000),
-    "gpt-5.1": ModelPreset("gpt-5.1", api_key_var="OPENAI_API_KEY", description="GPT-5.1", max_input_tokens=400000, max_output_tokens=128000),
-    "gpt-5.1-codex": ModelPreset("gpt-5.1-codex", api_key_var="OPENAI_API_KEY", description="GPT-5.1 Codex", max_input_tokens=400000, max_output_tokens=128000),
-    "gpt-5.1-codex-mini": ModelPreset("gpt-5.1-codex-mini", api_key_var="OPENAI_API_KEY", description="GPT-5.1 Codex Mini", max_input_tokens=400000, max_output_tokens=128000),
-    "gpt-5.1-codex-max": ModelPreset("gpt-5.1-codex-max", api_key_var="OPENAI_API_KEY", description="GPT-5.1 Codex Max", max_input_tokens=400000, max_output_tokens=128000),
-    "gpt-5.2": ModelPreset("gpt-5.2", api_key_var="OPENAI_API_KEY", description="GPT-5.2", max_input_tokens=400000, max_output_tokens=128000),
-    "gpt-5.2-chat-latest": ModelPreset("gpt-5.2-chat-latest", api_key_var="OPENAI_API_KEY", description="GPT-5.2 Chat", max_input_tokens=400000, max_output_tokens=128000),
-    "gpt-5-chat-latest": ModelPreset("gpt-5-chat-latest", api_key_var="OPENAI_API_KEY", description="GPT-5 Chat", max_input_tokens=400000, max_output_tokens=128000),
+    "gpt-5.2": ModelPreset(
+        name="gpt-5.2",
+        api_key_var="OPENAI_API_KEY",
+        description="OpenAI GPT-5.2 (frontier)",
+        max_input_tokens=400000,
+        max_output_tokens=128000,
+    ),
+    "gpt-5.2-pro": ModelPreset(
+        name="gpt-5.2-pro",
+        api_key_var="OPENAI_API_KEY",
+        description="OpenAI GPT-5.2 Pro",
+        max_input_tokens=400000,
+        max_output_tokens=128000,
+    ),
+    "gpt-5.2-chat-latest": ModelPreset(
+        name="gpt-5.2-chat-latest",
+        api_key_var="OPENAI_API_KEY",
+        description="OpenAI GPT-5.2 Chat (rolling alias)",
+        max_input_tokens=128000,
+        max_output_tokens=16384,
+    ),
+    "gpt-5.1": ModelPreset(
+        name="gpt-5.1",
+        api_key_var="OPENAI_API_KEY",
+        description="OpenAI GPT-5.1",
+        max_input_tokens=272000,
+        max_output_tokens=128000,
+    ),
+    "gpt-5.1-codex": ModelPreset(
+        name="gpt-5.1-codex",
+        api_key_var="OPENAI_API_KEY",
+        description="OpenAI GPT-5.1 Codex (agentic coding)",
+        max_input_tokens=272000,
+        max_output_tokens=128000,
+    ),
+    "gpt-5.1-codex-mini": ModelPreset(
+        name="gpt-5.1-codex-mini",
+        api_key_var="OPENAI_API_KEY",
+        description="OpenAI GPT-5.1 Codex Mini (agentic coding, faster/cheaper)",
+        max_input_tokens=272000,
+        max_output_tokens=128000,
+    ),
+    "gpt-5.1-codex-max": ModelPreset(
+        name="gpt-5.1-codex-max",
+        api_key_var="OPENAI_API_KEY",
+        description="OpenAI GPT-5.1 Codex Max (agentic coding, higher quality)",
+        max_input_tokens=272000,
+        max_output_tokens=128000,
+    ),
+    "gpt-5-chat-latest": ModelPreset("gpt-5-chat-latest", api_key_var="OPENAI_API_KEY", description="GPT-5 Chat", max_input_tokens=128000, max_output_tokens=16384),
 
     # DeepSeek
     "deepseek-chat": ModelPreset("deepseek/deepseek-chat", api_base="https://api.deepseek.com/v1", api_key_var="DEEPSEEK_API_KEY", description="DeepSeek V3"),
@@ -79,8 +119,8 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
     # AWS Bedrock (Converse API)
     # Auth: AWS_BEARER_TOKEN_BEDROCK, or standard AWS creds (env/profile/SSO)
     # Region: AWS_REGION or AWS_DEFAULT_REGION
-    "bedrock-qwen3-32b": ModelPreset("bedrock/converse/qwen.qwen3-32b-v1:0", description="Qwen3 32B", max_input_tokens=131072, max_output_tokens=8192),
-    "bedrock-qwen3-coder-480b": ModelPreset("bedrock/converse/qwen.qwen3-coder-480b-a35b-v1:0", description="Qwen3 Coder 480B", max_input_tokens=131072, max_output_tokens=8192),
+    "bedrock-qwen3-32b": ModelPreset("bedrock/converse/qwen.qwen3-32b-v1:0", description="Qwen3 32B", max_input_tokens=32000, max_output_tokens=4096),
+    "bedrock-qwen3-coder-480b": ModelPreset("bedrock/converse/qwen.qwen3-coder-480b-a35b-v1:0", description="Qwen3 Coder 480B", max_input_tokens=262144, max_output_tokens=66536),
 
     "bedrock-claude-haiku-4.5": ModelPreset("bedrock/converse/anthropic.claude-haiku-4-5-20251001-v1:0", description="Claude Haiku 4.5", max_input_tokens=200000, max_output_tokens=64000),
     "bedrock-claude-haiku-4.5-us": ModelPreset("bedrock/converse/us.anthropic.claude-haiku-4-5-20251001-v1:0", description="Claude Haiku 4.5 (US)", max_input_tokens=200000, max_output_tokens=64000),

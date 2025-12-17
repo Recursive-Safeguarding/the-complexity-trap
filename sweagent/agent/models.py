@@ -711,6 +711,8 @@ class LiteLLMModel(AbstractModel):
         # Always copy config to avoid shared state between different instances
         self.config: GenericAPIModelConfig = args.model_copy(deep=True)
         self._litellm_call_model = self._resolve_litellm_call_model(self.config.name)
+        if self._litellm_call_model.startswith("openai/responses/gpt-5"):
+            litellm.drop_params = True
         self.stats = InstanceStats()
         self.tools = tools
         self.logger = get_logger("swea-lm", emoji="🤖")
