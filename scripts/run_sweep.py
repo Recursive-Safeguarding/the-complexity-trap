@@ -147,7 +147,131 @@ def parse_args():
 
     parser.add_argument("--dry-run", action="store_true", help="Print command without executing")
 
+    hp_group = parser.add_argument_group("History Processor Hyperparameters")
+    hp_group.add_argument(
+        "--hp-obs-n",
+        type=int,
+        default=None,
+        help="LastNObservations: Number of observations to keep (default: from config)"
+    )
+    hp_group.add_argument(
+        "--hp-sum-n",
+        type=int,
+        default=None,
+        help="SummarizeEveryNTurns: Number of turns before summarization (default: 21)"
+    )
+    hp_group.add_argument(
+        "--hp-sum-keep-m",
+        type=int,
+        default=None,
+        help="SummarizeEveryNTurns: Recent turns to keep unsummarized (default: 10)"
+    )
+    hp_group.add_argument(
+        "--hp-sum-static-checkpoint",
+        type=_str2bool,
+        default=None,
+        help="SummarizeEveryNTurns: Replace vs append summaries (default: true)"
+    )
+    hp_group.add_argument(
+        "--hp-sum-extract-actions",
+        type=_str2bool,
+        default=None,
+        help="SummarizeEveryNTurns: Include action details in summary (default: false)"
+    )
+    hp_group.add_argument(
+        "--hp-sum-max-action-length",
+        type=int,
+        default=None,
+        help="SummarizeEveryNTurns: Max action length to keep (-1 = no limit, default: -1)"
+    )
+    hp_group.add_argument(
+        "--hp-sum-max-reasoning-length",
+        type=int,
+        default=None,
+        help="SummarizeEveryNTurns: Max reasoning length to keep (-1 = no limit, default: -1)"
+    )
+    hp_group.add_argument(
+        "--hp-sum-omit-turns",
+        type=_str2bool,
+        default=None,
+        help="SummarizeEveryNTurns: Skip LLM summary, just mark omitted (default: false)"
+    )
+
     return parser.parse_args()
+
+
+def get_relevant_hparams(strategy: str, args) -> dict:
+    hparams = {}
+    if strategy in ("observation_masking", "hybrid"):
+        if args.hp_obs_n is not None:
+            hparams["hp_obs_n"] = args.hp_obs_n
+    if strategy in ("llm_summary", "hybrid"):
+        if args.hp_sum_n is not None:
+            hparams["hp_sum_n"] = args.hp_sum_n
+        if args.hp_sum_keep_m is not None:
+            hparams["hp_sum_keep_m"] = args.hp_sum_keep_m
+        if args.hp_sum_static_checkpoint is not None:
+            hparams["hp_sum_static_checkpoint"] = args.hp_sum_static_checkpoint
+        if args.hp_sum_extract_actions is not None:
+            hparams["hp_sum_extract_actions"] = args.hp_sum_extract_actions
+        if args.hp_sum_max_action_length is not None:
+            hparams["hp_sum_max_action_length"] = args.hp_sum_max_action_length
+        if args.hp_sum_max_reasoning_length is not None:
+            hparams["hp_sum_max_reasoning_length"] = args.hp_sum_max_reasoning_length
+        if args.hp_sum_omit_turns is not None:
+            hparams["hp_sum_omit_turns"] = args.hp_sum_omit_turns
+
+    return hparams
+
+
+def generate_custom_config(base_config_path: str, args, output_path: Path) -> Path:
+    import yaml
+    with open(base_config_path) as f:
+        config = yaml.safe_load(f)
+
+    if "history_processors" not in config.get("agent", {}):
+        return Path(base_config_path)
+
+    modified = False
+    for processor in config["agent"]["history_processors"]:
+        proc_type = processor.get("type")
+
+        if proc_type == "last_n_observations":
+            if args.hp_obs_n is not None:
+                processor["n"] = args.hp_obs_n
+                modified = True
+
+        elif proc_type == "summarize_every_n_turns":
+            if args.hp_sum_n is not None:
+                processor["n"] = args.hp_sum_n
+                modified = True
+            if args.hp_sum_keep_m is not None:
+                processor["keep_last_m_turns"] = args.hp_sum_keep_m
+                modified = True
+            if args.hp_sum_static_checkpoint is not None:
+                processor["enable_static_checkpointing"] = args.hp_sum_static_checkpoint
+                modified = True
+            if args.hp_sum_extract_actions is not None:
+                processor["extract_action_from_turns"] = args.hp_sum_extract_actions
+                modified = True
+            if args.hp_sum_max_action_length is not None:
+                processor["max_kept_action_length"] = args.hp_sum_max_action_length
+                modified = True
+            if args.hp_sum_max_reasoning_length is not None:
+                processor["max_kept_reasoning_length"] = args.hp_sum_max_reasoning_length
+                modified = True
+            if args.hp_sum_omit_turns is not None:
+                processor["omit_turns"] = args.hp_sum_omit_turns
+                modified = True
+
+    if not modified:
+        return Path(base_config_path)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+    return output_path
 
 
 def _add_model_args(cmd: list[str], model_args: dict, prefix: str):
@@ -162,7 +286,11 @@ def build_sweagent_command(args) -> tuple[list[str], Path]:
         print("Note: Disabling cost limit for Bedrock models (LiteLLM cost map is often missing entries).")
         args.cost_limit = 0.0
 
-    config_file = STRATEGY_CONFIGS[args.strategy]
+    base_config_file = STRATEGY_CONFIGS[args.strategy]
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    user = os.environ.get("USER") or os.environ.get("USERNAME") or "user"
+    custom_config_path = Path("config/.generated") / user / f"config_{ts}_{_safe_name(args.model)}_{args.strategy}.yaml"
+    config_file = str(generate_custom_config(base_config_file, args, custom_config_path))
     cmd = [
         "sweagent", "run-batch",
         "--config", config_file,
@@ -180,7 +308,7 @@ def build_sweagent_command(args) -> tuple[list[str], Path]:
     ]
     _add_model_args(cmd, model_args, "--agent.model")
 
-    if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model != "same":
+    if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model not in ("same", args.model):
         sum_args = get_model_args(args.summarizer_model)
         if _is_bedrock_model_name(sum_args["name"]) and args.cost_limit > 0:
             print("Note: Disabling cost limit for Bedrock summarizer (LiteLLM cost map is often missing entries).")
@@ -253,7 +381,7 @@ def main():
             print("Warning: No Bedrock auth env vars detected (AWS_BEARER_TOKEN_BEDROCK / AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY / AWS_PROFILE).")
             print("If you rely on ~/.aws/credentials, SSO, or instance roles, you can ignore this.")
 
-    if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model not in (None, "same"):
+    if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model not in ("same", args.model):
         sum_preset = MODEL_PRESETS.get(args.summarizer_model)
         if sum_preset and _is_bedrock_model_name(sum_preset.name):
             if not (os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION")):
@@ -264,8 +392,6 @@ def main():
                 print("If you rely on ~/.aws/credentials, SSO, or instance roles, you can ignore this.")
 
     cmd, trajectories_base = build_sweagent_command(args)
-    # Choose a deterministic output directory per run so metrics parsing is reliable.
-    # (Avoids accidentally parsing a previous run when running multiple sweep points.)
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "user"
     ts = time.strftime("%Y-%m-%d_%H-%M-%S")
     output_dir = Path("trajectories") / user / f"sweep_{ts}__{_safe_name(args.model)}__{args.strategy}"
@@ -291,10 +417,10 @@ def main():
                 "instances_subset": args.instances_subset,
                 "instances_slice": args.instances_slice,
                 "call_limit": args.call_limit,
+                **get_relevant_hparams(args.strategy, args),
             }
-            # Build run name: model__strategy_summarizer__slice
             strategy_part = args.strategy
-            if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model != "same":
+            if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model not in ("same", args.model):
                 strategy_part = f"{args.strategy}_{args.summarizer_model}"
             parts = [args.model, strategy_part]
             if args.instances_slice:
