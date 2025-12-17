@@ -32,8 +32,6 @@ class WandBAgentHook(AbstractAgentHook):
         if not self._wandb_hook._run:
             return
 
-        import wandb
-
         self._step += 1
         self._wandb_hook._global_step += 1
 
@@ -81,7 +79,8 @@ class WandBAgentHook(AbstractAgentHook):
             cumul_total_in = cumul["tokens_raw_input"] + cumul["tokens_cached_input"]
             cumul_cache_hit_rate = cumul["tokens_cached_input"] / cumul_total_in if cumul_total_in else 0
 
-            wandb.log({
+            # Use safe logging to prevent crashes on broken WandB connection
+            self._wandb_hook._safe_log({
                 # Step identifiers
                 "step": self._step,
                 "global_step": self._wandb_hook._global_step,
@@ -177,6 +176,23 @@ class WandBHook(RunHook):
         }
         self._exit_status_counts: dict[str, int] = {}
 
+    def _safe_log(self, metrics: dict[str, Any]) -> bool:
+        """Safely log metrics to WandB, handling connection failures gracefully.
+
+        Returns True if logging succeeded, False otherwise.
+        On failure, disables further WandB logging by setting _run to None.
+        """
+        if not self._run:
+            return False
+        try:
+            import wandb
+            wandb.log(metrics)
+            return True
+        except Exception as e:
+            print(f"WARNING: WandB log failed: {e}")
+            self._run = None
+            return False
+
     def _categorize_exit_status(self, exit_status: str) -> str:
         """Map exit status to category. Extracts reason from "submitted (reason)" patterns."""
         if not exit_status:
@@ -223,6 +239,11 @@ class WandBHook(RunHook):
                 name=self._name,
             )
 
+            # In sweep mode, wandb.init() joins an existing run so the name param
+            # is ignored. Must set explicitly. See wandb docs/community.
+            if self._name and self._run:
+                self._run.name = self._name
+
             # Define custom x-axes for metric groups to ensure proper plotting
             # Step-level metrics use global_step (monotonically increasing across all instances)
             wandb.define_metric("global_step")
@@ -242,8 +263,13 @@ class WandBHook(RunHook):
 
         except ImportError:
             print("WARNING: wandb not installed, skipping WandB logging")
+            self._run = None
         except Exception as e:
             print(f"WARNING: WandB init failed: {e}")
+            # CRITICAL: Reset _run to None to prevent subsequent wandb.log() calls
+            # from crashing the run. This can happen if wandb.init() partially
+            # succeeded but define_metric() or save() failed (e.g., broken pipe).
+            self._run = None
 
     def on_agent_created(self, *, agent):
         if self._run:
@@ -252,8 +278,6 @@ class WandBHook(RunHook):
     def on_instance_completed(self, *, result: "AgentRunResult"):
         if not self._run:
             return
-
-        import wandb
 
         info = result.info
         trajectory = result.trajectory
@@ -371,62 +395,77 @@ class WandBHook(RunHook):
             "avg_api_calls": self._totals["total_api_calls"] / n if n else 0,
             "avg_tokens_per_turn": total_input_all / self._totals["total_turns"] if self._totals["total_turns"] else 0,
         }
-        wandb.log(live)
+        self._safe_log(live)
 
     def on_end(self):
         if not self._run:
             return
 
-        import wandb
+        try:
+            import wandb
 
-        n = self._totals["n_instances"]
-        raw = self._totals["total_raw_input_tokens"]
-        cached = self._totals["total_cached_input_tokens"]
-        total_input = raw + cached
+            n = self._totals["n_instances"]
+            raw = self._totals["total_raw_input_tokens"]
+            cached = self._totals["total_cached_input_tokens"]
+            total_input = raw + cached
 
-        total_all_api_calls = (
-            self._totals["total_api_calls"] +
-            self._totals["total_summary_api_calls"] +
-            self._totals["total_rloop_api_calls"]
-        )
-
-        # Exit status distribution for final summary
-        exit_dist = {f"exit/{k}": v for k, v in self._exit_status_counts.items()}
-
-        final = {
-            **self._totals,
-            **exit_dist,
-            "submission_rate": self._totals["n_submitted"] / n if n else 0,
-            "cache_hit_rate": cached / total_input if total_input else 0,
-            "avg_cost": self._totals["total_cost"] / n if n else 0,
-            "avg_turns": self._totals["total_turns"] / n if n else 0,
-            "avg_api_calls": self._totals["total_api_calls"] / n if n else 0,
-            "avg_tokens_per_turn": total_input / self._totals["total_turns"] if self._totals["total_turns"] else 0,
-            "summary_cost_fraction": (
-                self._totals["total_summary_cost"] / self._totals["total_cost"]
-                if self._totals["total_cost"] else 0
-            ),
-            "rloop_cost_fraction": (
-                self._totals["total_rloop_cost"] / self._totals["total_cost"]
-                if self._totals["total_cost"] else 0
-            ),
-            "summary_api_fraction": (
-                self._totals["total_summary_api_calls"] / total_all_api_calls
-                if total_all_api_calls else 0
-            ),
-            "rloop_api_fraction": (
-                self._totals["total_rloop_api_calls"] / total_all_api_calls
-                if total_all_api_calls else 0
-            ),
-        }
-        wandb.summary.update(final)
-
-        if self._instances:
-            cols = list(self._instances[0].keys())
-            table = wandb.Table(
-                columns=cols,
-                data=[[row.get(c) for c in cols] for row in self._instances],
+            total_all_api_calls = (
+                self._totals["total_api_calls"] +
+                self._totals["total_summary_api_calls"] +
+                self._totals["total_rloop_api_calls"]
             )
-            wandb.log({"instances": table})
 
-        wandb.finish()
+            # Exit status distribution for final summary
+            exit_dist = {f"exit/{k}": v for k, v in self._exit_status_counts.items()}
+
+            final = {
+                **self._totals,
+                **exit_dist,
+                "submission_rate": self._totals["n_submitted"] / n if n else 0,
+                "cache_hit_rate": cached / total_input if total_input else 0,
+                "avg_cost": self._totals["total_cost"] / n if n else 0,
+                "avg_turns": self._totals["total_turns"] / n if n else 0,
+                "avg_api_calls": self._totals["total_api_calls"] / n if n else 0,
+                "avg_tokens_per_turn": total_input / self._totals["total_turns"] if self._totals["total_turns"] else 0,
+                "summary_cost_fraction": (
+                    self._totals["total_summary_cost"] / self._totals["total_cost"]
+                    if self._totals["total_cost"] else 0
+                ),
+                "rloop_cost_fraction": (
+                    self._totals["total_rloop_cost"] / self._totals["total_cost"]
+                    if self._totals["total_cost"] else 0
+                ),
+                "summary_api_fraction": (
+                    self._totals["total_summary_api_calls"] / total_all_api_calls
+                    if total_all_api_calls else 0
+                ),
+                "rloop_api_fraction": (
+                    self._totals["total_rloop_api_calls"] / total_all_api_calls
+                    if total_all_api_calls else 0
+                ),
+            }
+
+            try:
+                wandb.summary.update(final)
+            except Exception as e:
+                print(f"WARNING: WandB summary update failed: {e}")
+
+            if self._instances and self._run:
+                try:
+                    cols = list(self._instances[0].keys())
+                    table = wandb.Table(
+                        columns=cols,
+                        data=[[row.get(c) for c in cols] for row in self._instances],
+                    )
+                    wandb.log({"instances": table})
+                except Exception as e:
+                    print(f"WARNING: WandB table logging failed: {e}")
+
+            try:
+                wandb.finish()
+            except Exception as e:
+                print(f"WARNING: WandB finish failed: {e}")
+
+        except Exception as e:
+            print(f"WARNING: WandB on_end failed: {e}")
+            self._run = None
