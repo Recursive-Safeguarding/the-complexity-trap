@@ -292,7 +292,14 @@ def main():
                 "instances_slice": args.instances_slice,
                 "call_limit": args.call_limit,
             }
-            run_name = f"{args.model}__{args.strategy}"
+            # Build run name: model__strategy_summarizer__slice
+            strategy_part = args.strategy
+            if args.strategy in ("llm_summary", "hybrid") and args.summarizer_model != "same":
+                strategy_part = f"{args.strategy}_{args.summarizer_model}"
+            parts = [args.model, strategy_part]
+            if args.instances_slice:
+                parts.append(args.instances_slice.replace(":", ""))
+            run_name = "__".join(parts)
             wandb_hook = WandBHook(
                 project=args.wandb_project,
                 entity=args.wandb_entity,
