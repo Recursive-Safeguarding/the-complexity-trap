@@ -15,7 +15,7 @@ sweagent run-batch \\
     --instances.subset lite \\
     --instances.split dev  \\
     --instances.slice :50 \\     # first 50 instances
-    --instances.shuffle=True \\  # shuffle instances (with fixed seed)
+    --instances.shuffle=True \\  # shuffle instances (deterministic; see --instances.shuffle_seed)
     --config config/anthropic_filemap.yaml \\  # configure model
     --agent.model.name gpt-4o
 [/green]
@@ -29,7 +29,6 @@ All instance specifications support the [green]filter[/green], [green]slice[/gre
 With [green]filter[/green], you can select specific instances, e.g., [green]--instances.filter='instance_id_1|instance_id_2'[/green].
 """
 
-from datetime import datetime
 import getpass
 import json
 import logging
@@ -39,6 +38,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
+from datetime import datetime
 from pathlib import Path
 from typing import Self
 
@@ -344,6 +344,7 @@ class RunBatch:
         )
         agent.replay_config = single_run_replay_config  # type: ignore[attr-defined]
         agent.add_hook(SetStatusAgentHook(instance.problem_statement.id, self._progress_manager.update_instance_status))
+        self._chooks.on_agent_created(agent=agent)
         self._progress_manager.update_instance_status(instance.problem_statement.id, "Starting environment")
         instance.env.name = f"{instance.problem_statement.id}"
         env = SWEEnv.from_config(instance.env)

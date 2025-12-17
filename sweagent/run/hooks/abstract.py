@@ -20,6 +20,9 @@ class RunHook:
     ):
         """Called at the beginning of each instance loop in `Main.run`"""
 
+    def on_agent_created(self, *, agent):
+        """Called after agent is created, before agent.run(). Allows injecting agent hooks."""
+
     def on_instance_skipped(
         self,
     ):
@@ -57,6 +60,10 @@ class CombinedRunHooks(RunHook):
     ):
         for hook in self._hooks:
             hook.on_instance_start(index=index, env=env, problem_statement=problem_statement)
+
+    def on_agent_created(self, *, agent):
+        for hook in self._hooks:
+            hook.on_agent_created(agent=agent)
 
     def on_instance_skipped(self):
         for hook in self._hooks:

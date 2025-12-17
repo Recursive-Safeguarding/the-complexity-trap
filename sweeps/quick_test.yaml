@@ -1,0 +1,62 @@
+# Quick validation sweep: 4 budget-friendly models × 4 strategies × 3 instances
+# Total: 16 runs, ~48 task executions
+
+program: scripts/run_sweep.py
+method: grid
+metric:
+  name: total_cost
+  goal: minimize
+
+parameters:
+  model:
+    values:
+      - deepseek-chat
+      - gpt-4o-mini
+      - glm-4.6
+      - kimi-k2
+
+  strategy:
+    values:
+      - raw
+      - observation_masking
+      - llm_summary
+      - hybrid
+
+  summarizer_model:
+    value: same
+
+  instances_subset:
+    value: verified
+
+  instances_slice:
+    value: ":3"
+
+  call_limit:
+    value: 100
+
+  cost_limit:
+    value: 1.0             # $1 per instance max
+
+command:
+  - uv
+  - run
+  - --no-project
+  - python
+  - ${program}
+  - --model
+  - ${model}
+  - --strategy
+  - ${strategy}
+  - --summarizer-model
+  - ${summarizer_model}
+  - --instances-subset
+  - ${instances_subset}
+  - --instances-slice
+  - ${instances_slice}
+  - --call-limit
+  - ${call_limit}
+  - --cost-limit
+  - ${cost_limit}
+  - --wandb
+  - --wandb-project
+  - complexity-trap-test
