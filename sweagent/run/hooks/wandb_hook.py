@@ -143,6 +143,7 @@ class WandBHook(RunHook):
         self._run = None
         self._instances: list[dict[str, Any]] = []
         self._global_step = 0
+        self._current_instance_id: str | None = None
         self._cumulative = {
             "cost": 0.0,
             "tokens_in": 0,
@@ -331,6 +332,10 @@ class WandBHook(RunHook):
         if self._run:
             agent.add_hook(WandBAgentHook(self))
 
+    def on_instance_start(self, *, index: int, env, problem_statement):
+        """Store instance_id for use in on_instance_completed."""
+        self._current_instance_id = getattr(problem_statement, "id", None)
+
     def on_instance_completed(self, *, result: "AgentRunResult"):
         if not self._run:
             return
@@ -382,7 +387,7 @@ class WandBHook(RunHook):
         review_score = review.get("accept") if isinstance(review.get("accept"), (int, float)) else None
 
         # New visualization metrics
-        instance_id = info.get("instance_id", "unknown")
+        instance_id = self._current_instance_id or "unknown"
         repo = self._extract_repo(instance_id)
         submission = info.get("submission")
         patch_lines = self._count_patch_lines(submission)
