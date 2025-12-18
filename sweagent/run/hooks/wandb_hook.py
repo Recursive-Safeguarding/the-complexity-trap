@@ -173,15 +173,67 @@ class WandBHook(RunHook):
             "total_summary_raw_input_tokens": 0,
             "total_summary_cached_input_tokens": 0,
             "total_summary_output_tokens": 0,
+            # Visualization metrics
+            "total_patch_lines": 0,
+            "total_duration_ms": 0.0,
         }
         self._exit_status_counts: dict[str, int] = {}
+        self._repo_counts: dict[str, int] = {}
+        self._turn_counts: list[int] = []
+
+    def _extract_repo(self, instance_id: str | None) -> str:
+        """Extract repo from instance_id (e.g., 'django__django-12345' -> 'django')."""
+        if not instance_id:
+            return "unknown"
+        try:
+            # Coerce to string to handle non-string iterables
+            instance_id = str(instance_id)
+            if "__" in instance_id:
+                repo = instance_id.split("__")[0]
+            elif "-" in instance_id:
+                repo = instance_id.split("-")[0]
+            else:
+                repo = instance_id
+            return repo if repo else "unknown"
+        except (TypeError, ValueError):
+            return "unknown"
+
+    def _count_patch_lines(self, submission: str | None) -> int:
+        """Count non-empty lines in patch."""
+        if not submission:
+            return 0
+        try:
+            return len([line for line in submission.splitlines() if line.strip()])
+        except (TypeError, AttributeError):
+            return 0  # Non-string input
+
+    def _compute_instance_duration(self, trajectory: list | None) -> float:
+        """Sum execution_time from trajectory steps. Returns ms (input assumed in seconds)."""
+        import math
+
+        if not trajectory:
+            return 0.0
+        total = 0.0
+        for step in trajectory:
+            try:
+                if isinstance(step, dict):
+                    raw = step.get("execution_time")
+                elif hasattr(step, "execution_time"):
+                    raw = step.execution_time
+                elif hasattr(step, "model_dump"):
+                    raw = step.model_dump().get("execution_time")
+                else:
+                    raw = None
+                if raw is not None:
+                    val = float(raw)
+                    if math.isfinite(val):  # Skip nan/inf
+                        total += val
+            except (TypeError, ValueError, AttributeError):
+                pass  # Skip invalid values silently
+        return total * 1000  # Convert s to ms
 
     def _safe_log(self, metrics: dict[str, Any]) -> bool:
-        """Safely log metrics to WandB, handling connection failures gracefully.
-
-        Returns True if logging succeeded, False otherwise.
-        On failure, disables further WandB logging by setting _run to None.
-        """
+        """Log to WandB. Returns False and disables logging on failure."""
         if not self._run:
             return False
         try:
@@ -260,6 +312,10 @@ class WandBHook(RunHook):
             wandb.define_metric("avg_*", step_metric="n_instances")
             wandb.define_metric("total_*", step_metric="n_instances")
             wandb.define_metric("exit/*", step_metric="n_instances")
+            wandb.define_metric("repo/*", step_metric="n_instances")
+            wandb.define_metric("turn_*", step_metric="n_instances")
+            wandb.define_metric("summary_cost_fraction", step_metric="n_instances")
+            wandb.define_metric("rloop_cost_fraction", step_metric="n_instances")
 
         except ImportError:
             print("WARNING: wandb not installed, skipping WandB logging")
@@ -325,8 +381,17 @@ class WandBHook(RunHook):
         review = info.get("review", {}) or {}
         review_score = review.get("accept") if isinstance(review.get("accept"), (int, float)) else None
 
+        # New visualization metrics
+        instance_id = info.get("instance_id", "unknown")
+        repo = self._extract_repo(instance_id)
+        submission = info.get("submission")
+        patch_lines = self._count_patch_lines(submission)
+        instance_duration = self._compute_instance_duration(trajectory)
+        tokens_per_turn = total_input / n_turns if n_turns else 0
+
         metrics = {
-            "instance_id": info.get("instance_id", "unknown"),
+            "instance_id": instance_id,
+            "repo": repo,
             "exit_status": exit_status or "unknown",
             "exit_category": exit_category,
             "submitted": submitted,
@@ -338,8 +403,8 @@ class WandBHook(RunHook):
             "rloop_cost": rloop_cost,
             # API call counts
             "agent_api_calls": agent_stats.get("api_calls", 0) or 0,
-            "summary_api_calls": summary_stats.get("api_calls", 0) if summary_stats else 0,
-            "rloop_api_calls": rloop_stats.get("api_calls", 0) if rloop_stats else 0,
+            "summary_api_calls": (summary_stats.get("api_calls", 0) or 0) if summary_stats else 0,
+            "rloop_api_calls": (rloop_stats.get("api_calls", 0) or 0) if rloop_stats else 0,
             # Agent token breakdown
             "raw_input_tokens": raw_input,
             "cached_input_tokens": cached_input,
@@ -350,6 +415,10 @@ class WandBHook(RunHook):
             "summary_raw_input_tokens": summary_raw_input,
             "summary_cached_input_tokens": summary_cached_input,
             "summary_output_tokens": summary_output,
+            # Visualization metrics
+            "patch_lines": patch_lines,
+            "instance_duration_ms": instance_duration,
+            "tokens_per_turn": tokens_per_turn,
             # Review score (if retry loop used)
             "review_score": review_score,
         }
@@ -357,6 +426,12 @@ class WandBHook(RunHook):
 
         # Track exit status distribution
         self._exit_status_counts[exit_category] = self._exit_status_counts.get(exit_category, 0) + 1
+
+        # Track repo distribution
+        self._repo_counts[repo] = self._repo_counts.get(repo, 0) + 1
+
+        # Track turn counts for distribution
+        self._turn_counts.append(n_turns)
 
         # Update running totals
         self._totals["n_instances"] += 1
@@ -376,6 +451,8 @@ class WandBHook(RunHook):
         self._totals["total_summary_raw_input_tokens"] += summary_raw_input
         self._totals["total_summary_cached_input_tokens"] += summary_cached_input
         self._totals["total_summary_output_tokens"] += summary_output
+        self._totals["total_patch_lines"] += patch_lines
+        self._totals["total_duration_ms"] += instance_duration
 
         n = self._totals["n_instances"]
         total_raw = self._totals["total_raw_input_tokens"]
@@ -385,15 +462,46 @@ class WandBHook(RunHook):
         # Build exit status distribution metrics (prefixed for WandB grouping)
         exit_dist = {f"exit/{k}": v for k, v in self._exit_status_counts.items()}
 
+        # Build repo distribution metrics (prefixed for WandB grouping)
+        repo_dist = {f"repo/{k}": v for k, v in self._repo_counts.items()}
+
+        # Turn statistics
+        turn_std = 0.0
+        turn_median = 0.0
+        turn_min = 0
+        turn_max = 0
+        if self._turn_counts:
+            import statistics
+            turn_std = statistics.stdev(self._turn_counts) if len(self._turn_counts) > 1 else 0.0
+            turn_median = statistics.median(self._turn_counts)
+            turn_min = min(self._turn_counts)
+            turn_max = max(self._turn_counts)
+
+        # Cost fractions for live plotting
+        total_cost = self._totals["total_cost"]
+        summary_cost_fraction = self._totals["total_summary_cost"] / total_cost if total_cost else 0
+        rloop_cost_fraction = self._totals["total_rloop_cost"] / total_cost if total_cost else 0
+
         live = {
             **self._totals,
             **exit_dist,
+            **repo_dist,
             "submission_rate": self._totals["n_submitted"] / n if n else 0,
             "cache_hit_rate": total_cached / total_input_all if total_input_all else 0,
             "avg_cost": self._totals["total_cost"] / n if n else 0,
             "avg_turns": self._totals["total_turns"] / n if n else 0,
             "avg_api_calls": self._totals["total_api_calls"] / n if n else 0,
             "avg_tokens_per_turn": total_input_all / self._totals["total_turns"] if self._totals["total_turns"] else 0,
+            "avg_patch_lines": self._totals["total_patch_lines"] / n if n else 0,
+            "avg_duration_ms": self._totals["total_duration_ms"] / n if n else 0,
+            # Cost fractions (for line plots over n_instances)
+            "summary_cost_fraction": summary_cost_fraction,
+            "rloop_cost_fraction": rloop_cost_fraction,
+            # Turn statistics
+            "turn_std": turn_std,
+            "turn_median": turn_median,
+            "turn_min": turn_min,
+            "turn_max": turn_max,
         }
         self._safe_log(live)
 
@@ -403,6 +511,7 @@ class WandBHook(RunHook):
 
         try:
             import wandb
+            import statistics
 
             n = self._totals["n_instances"]
             raw = self._totals["total_raw_input_tokens"]
@@ -418,15 +527,32 @@ class WandBHook(RunHook):
             # Exit status distribution for final summary
             exit_dist = {f"exit/{k}": v for k, v in self._exit_status_counts.items()}
 
+            # Repo distribution for final summary
+            repo_dist = {f"repo/{k}": v for k, v in self._repo_counts.items()}
+
+            # Turn statistics
+            turn_std = 0.0
+            turn_median = 0.0
+            turn_min = 0
+            turn_max = 0
+            if self._turn_counts:
+                turn_std = statistics.stdev(self._turn_counts) if len(self._turn_counts) > 1 else 0.0
+                turn_median = statistics.median(self._turn_counts)
+                turn_min = min(self._turn_counts)
+                turn_max = max(self._turn_counts)
+
             final = {
                 **self._totals,
                 **exit_dist,
+                **repo_dist,
                 "submission_rate": self._totals["n_submitted"] / n if n else 0,
                 "cache_hit_rate": cached / total_input if total_input else 0,
                 "avg_cost": self._totals["total_cost"] / n if n else 0,
                 "avg_turns": self._totals["total_turns"] / n if n else 0,
                 "avg_api_calls": self._totals["total_api_calls"] / n if n else 0,
                 "avg_tokens_per_turn": total_input / self._totals["total_turns"] if self._totals["total_turns"] else 0,
+                "avg_patch_lines": self._totals["total_patch_lines"] / n if n else 0,
+                "avg_duration_ms": self._totals["total_duration_ms"] / n if n else 0,
                 "summary_cost_fraction": (
                     self._totals["total_summary_cost"] / self._totals["total_cost"]
                     if self._totals["total_cost"] else 0
@@ -443,12 +569,26 @@ class WandBHook(RunHook):
                     self._totals["total_rloop_api_calls"] / total_all_api_calls
                     if total_all_api_calls else 0
                 ),
+                # Turn statistics
+                "turn_std": turn_std,
+                "turn_median": turn_median,
+                "turn_min": turn_min,
+                "turn_max": turn_max,
             }
 
             try:
                 wandb.summary.update(final)
             except Exception as e:
                 print(f"WARNING: WandB summary update failed: {e}")
+                self._run = None  # Consistent with _safe_log() pattern
+
+            # Log turn distribution histogram
+            if self._turn_counts and self._run:
+                try:
+                    wandb.log({"turn_distribution": wandb.Histogram(self._turn_counts)})
+                except Exception as e:
+                    print(f"WARNING: WandB histogram logging failed: {e}")
+                    self._run = None
 
             if self._instances and self._run:
                 try:
@@ -460,6 +600,7 @@ class WandBHook(RunHook):
                     wandb.log({"instances": table})
                 except Exception as e:
                     print(f"WARNING: WandB table logging failed: {e}")
+                    self._run = None
 
             try:
                 wandb.finish()
