@@ -16,6 +16,11 @@ class ModelPreset:
     supports_function_calling: bool = True
     max_input_tokens: int | None = None
     max_output_tokens: int | None = None
+    extra_headers: dict[str, str] | None = None
+    # Total context window (in+out). Defaults to max_input_tokens if None.
+    context_window: int | None = None
+    # Bypass cost limits (subscription/free-tier). Tracking remains active.
+    bypass_cost_limits: bool = False
 
     def get_cli_args(self) -> dict[str, Any]:
         args: dict[str, Any] = {"name": self.name}
@@ -27,6 +32,12 @@ class ModelPreset:
             args["max_input_tokens"] = self.max_input_tokens
         if self.max_output_tokens:
             args["max_output_tokens"] = self.max_output_tokens
+        if self.extra_headers:
+            args["extra_headers"] = self.extra_headers
+        if self.context_window:
+            args["context_window"] = self.context_window
+        if self.bypass_cost_limits:
+            args["bypass_cost_limits"] = True
         return args
 
 
@@ -122,16 +133,18 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
     "claude-haiku-4.5": ModelPreset("claude-haiku-4-5-20251001", api_key_var="ANTHROPIC_API_KEY", description="Claude Haiku 4.5"),
     "claude-opus-4.5": ModelPreset("claude-opus-4-5-20251101", api_key_var="ANTHROPIC_API_KEY", description="Claude Opus 4.5"),
 
-    # GLM (Z.AI endpoint)
-    "glm-4.6": ModelPreset("anthropic/glm-4.6", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.6 (355B MoE, 32B active)", max_input_tokens=200000, max_output_tokens=131072),
-    "glm-4.5-air": ModelPreset("anthropic/glm-4.5-air", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.5 Air", max_input_tokens=128000, max_output_tokens=16384),
+    # GLM (Z.AI) - bypass cost limits, User-Agent for quota routing
+    "glm-4.6": ModelPreset("anthropic/glm-4.6", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.6 (355B MoE, 32B active)", max_input_tokens=200000, max_output_tokens=131072, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
+    "glm-4.7": ModelPreset("anthropic/glm-4.7", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.7 (agentic coding, thinking modes)", max_input_tokens=131072, max_output_tokens=131072, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
+    "glm-4.5-air": ModelPreset("anthropic/glm-4.5-air", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.5 Air", max_input_tokens=128000, max_output_tokens=16384, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
 
-    # MiniMax
-    "minimax-m2": ModelPreset("openai/MiniMax-M2", api_base="https://api.minimax.io/v1", api_key_var="MINIMAX_API_KEY", description="MiniMax M2 (230B MoE, 10B active)", max_input_tokens=204800, max_output_tokens=196608),
+    # MiniMax - bypass cost limits
+    "minimax-m2": ModelPreset("openai/MiniMax-M2", api_base="https://api.minimax.io/v1", api_key_var="MINIMAX_API_KEY", description="MiniMax M2 (230B MoE, 10B active)", max_input_tokens=204800, max_output_tokens=196608, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
+    "minimax-m2.1": ModelPreset("anthropic/minimax-m2.1", api_base="https://api.minimax.io/anthropic", api_key_var="MINIMAX_API_KEY", description="MiniMax M2.1 (enhanced multilingual, faster)", max_input_tokens=204800, max_output_tokens=196608, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
 
-    # Kimi / Moonshot
-    "kimi-k2": ModelPreset("anthropic/kimi-for-coding", api_base="https://api.kimi.com/coding/", api_key_var="MOONSHOT_API_KEY", description="Kimi K2 (1T MoE, 32B active)", max_input_tokens=262144, max_output_tokens=32768),
-    "kimi-k2-free": ModelPreset("openrouter/moonshotai/kimi-k2:free", api_key_var="OPENROUTER_API_KEY", description="Kimi K2 (OpenRouter free)"),
+    # Kimi / Moonshot - bypass cost limits
+    "kimi-k2": ModelPreset("openai/kimi-for-coding", api_base="https://api.kimi.com/coding/v1", api_key_var="MOONSHOT_API_KEY", description="Kimi K2 (1T MoE, 32B active)", max_input_tokens=262144, max_output_tokens=32768, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
+    "kimi-k2-free": ModelPreset("openrouter/moonshotai/kimi-k2:free", api_key_var="OPENROUTER_API_KEY", description="Kimi K2 (OpenRouter free)", bypass_cost_limits=True),
 
     # Vertex AI
     "gemini-2.5-flash": ModelPreset("vertex_ai/gemini-2.5-flash", description="Gemini 2.5 Flash"),
@@ -145,10 +158,8 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
     "openrouter/meta-llama/llama-4-maverick:free": ModelPreset("openrouter/meta-llama/llama-4-maverick:free", api_key_var="OPENROUTER_API_KEY", description="Llama 4 Maverick (free)"),
 
     # AWS Bedrock (Converse API)
-    # Auth: AWS_BEARER_TOKEN_BEDROCK, or standard AWS creds (env/profile/SSO)
-    # Region: AWS_REGION or AWS_DEFAULT_REGION
-    "bedrock-qwen3-32b": ModelPreset("bedrock/converse/qwen.qwen3-32b-v1:0", description="Qwen3 32B", max_input_tokens=32768, max_output_tokens=8192),
-    "bedrock-qwen3-coder-480b": ModelPreset("bedrock/converse/qwen.qwen3-coder-480b-a35b-v1:0", description="Qwen3 Coder 480B", max_input_tokens=262144, max_output_tokens=65536),
+    "bedrock-qwen3-32b": ModelPreset("bedrock/converse/qwen.qwen3-32b-v1:0", description="Qwen3 32B", max_input_tokens=24576, max_output_tokens=8192, context_window=32768),
+    "bedrock-qwen3-coder-480b": ModelPreset("bedrock/converse/qwen.qwen3-coder-480b-a35b-v1:0", description="Qwen3 Coder 480B", max_input_tokens=65536, max_output_tokens=65536, context_window=131072),
 
     "bedrock-claude-haiku-4.5": ModelPreset("bedrock/converse/anthropic.claude-haiku-4-5-20251001-v1:0", description="Claude Haiku 4.5", max_input_tokens=200000, max_output_tokens=64000),
     "bedrock-claude-haiku-4.5-us": ModelPreset("bedrock/converse/us.anthropic.claude-haiku-4-5-20251001-v1:0", description="Claude Haiku 4.5 (US)", max_input_tokens=200000, max_output_tokens=64000),
@@ -169,41 +180,88 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
 }
 
 
-# Coding plan models (monthly subscription, not per-token)
+# Subscription models - real pricing for benchmarking (cost limits bypassed via not_actual_cost)
+# Sources: costgoat.com, docs.z.ai, minimaxm2.io
 CUSTOM_MODEL_PRICING: dict[str, dict] = {
-    "anthropic/kimi-for-coding": {
-        "input_cost_per_token": 0,
-        "output_cost_per_token": 0,
+    "openai/kimi-for-coding": {
+        "input_cost_per_token": 0.60 / 1_000_000,  # $0.60/M tokens
+        "output_cost_per_token": 2.50 / 1_000_000,  # $2.50/M tokens
+        "cache_read_input_token_cost": 0.15 / 1_000_000,  # $0.15/M (cache hit)
         "max_tokens": 262144,
-        "litellm_provider": "anthropic",
+        "litellm_provider": "openai",
         "mode": "chat",
     },
     "anthropic/glm-4.6": {
-        "input_cost_per_token": 0,
-        "output_cost_per_token": 0,
+        "input_cost_per_token": 0.50 / 1_000_000,  # $0.50/M tokens
+        "output_cost_per_token": 2.20 / 1_000_000,  # $2.20/M tokens
         "max_tokens": 200000,
         "litellm_provider": "anthropic",
         "mode": "chat",
     },
     "glm-4.6": {
-        "input_cost_per_token": 0,
-        "output_cost_per_token": 0,
+        "input_cost_per_token": 0.50 / 1_000_000,
+        "output_cost_per_token": 2.20 / 1_000_000,
         "max_tokens": 200000,
         "litellm_provider": "anthropic",
         "mode": "chat",
     },
     "openai/MiniMax-M2": {
-        "input_cost_per_token": 0,
-        "output_cost_per_token": 0,
+        "input_cost_per_token": 0.30 / 1_000_000,  # $0.30/M tokens
+        "output_cost_per_token": 1.20 / 1_000_000,  # $1.20/M tokens
         "max_tokens": 204800,
         "litellm_provider": "openai",
         "mode": "chat",
     },
     "MiniMax-M2": {
-        "input_cost_per_token": 0,
-        "output_cost_per_token": 0,
+        "input_cost_per_token": 0.30 / 1_000_000,
+        "output_cost_per_token": 1.20 / 1_000_000,
         "max_tokens": 204800,
         "litellm_provider": "openai",
+        "mode": "chat",
+    },
+    # GLM-4.7 (same pricing as 4.6)
+    "anthropic/glm-4.7": {
+        "input_cost_per_token": 0.50 / 1_000_000,
+        "output_cost_per_token": 2.20 / 1_000_000,
+        "max_tokens": 131072,
+        "litellm_provider": "anthropic",
+        "mode": "chat",
+    },
+    "glm-4.7": {
+        "input_cost_per_token": 0.50 / 1_000_000,
+        "output_cost_per_token": 2.20 / 1_000_000,
+        "max_tokens": 131072,
+        "litellm_provider": "anthropic",
+        "mode": "chat",
+    },
+    # GLM-4.5 Air (lighter model, same pricing structure)
+    "anthropic/glm-4.5-air": {
+        "input_cost_per_token": 0.50 / 1_000_000,
+        "output_cost_per_token": 2.20 / 1_000_000,
+        "max_tokens": 128000,
+        "litellm_provider": "anthropic",
+        "mode": "chat",
+    },
+    "glm-4.5-air": {
+        "input_cost_per_token": 0.50 / 1_000_000,
+        "output_cost_per_token": 2.20 / 1_000_000,
+        "max_tokens": 128000,
+        "litellm_provider": "anthropic",
+        "mode": "chat",
+    },
+    # MiniMax M2.1 (same pricing as M2)
+    "anthropic/minimax-m2.1": {
+        "input_cost_per_token": 0.30 / 1_000_000,
+        "output_cost_per_token": 1.20 / 1_000_000,
+        "max_tokens": 204800,
+        "litellm_provider": "anthropic",
+        "mode": "chat",
+    },
+    "minimax-m2.1": {
+        "input_cost_per_token": 0.30 / 1_000_000,
+        "output_cost_per_token": 1.20 / 1_000_000,
+        "max_tokens": 204800,
+        "litellm_provider": "anthropic",
         "mode": "chat",
     },
 }

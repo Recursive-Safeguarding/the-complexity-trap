@@ -22,6 +22,12 @@ from sweagent.utils.model_config import (
     get_model_args,
     print_models,
 )
+from scripts.shared_utils import (
+    str2bool,
+    is_bedrock_model_name,
+    has_bedrock_auth_env,
+    add_model_cli_args,
+)
 
 
 def parse_args():
@@ -34,7 +40,7 @@ def parse_args():
     parser.add_argument(
         "model",
         nargs="?",
-        help="Model preset key (e.g., kimi-k2, glm-4.6, minimax-m2)",
+        help="Model preset (kimi-k2, glm-4.7, etc)",
     )
     parser.add_argument(
         "--list",
@@ -91,6 +97,12 @@ def parse_args():
         help="Per-instance cost limit in USD (default: 0.0)",
     )
     parser.add_argument(
+        "--bypass-cost-limits",
+        type=str2bool,
+        default=False,
+        help="Bypass cost limits (for coding-plan models). Cost is still tracked for logging.",
+    )
+    parser.add_argument(
         "--output-dir",
         help="Output directory for trajectories",
     )
@@ -115,36 +127,21 @@ def parse_args():
     return parser.parse_args()
 
 
-def _is_bedrock_model_name(model_name: str) -> bool:
-    return model_name.startswith("bedrock/")
-
-
-def _has_bedrock_auth_env() -> bool:
-    return bool(
-        os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
-        or (os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"))
-        or os.environ.get("AWS_PROFILE")
-    )
-
-
-def _add_model_args(cmd: list[str], model_args: dict, prefix: str):
-    cmd.extend([f"{prefix}.name", model_args["name"]])
-    for key in ("api_base", "api_key", "max_input_tokens", "max_output_tokens"):
-        if model_args.get(key):
-            cmd.extend([f"{prefix}.{key}", str(model_args[key])])
-
-
 def build_command(args) -> list[str]:
     cmd = ["sweagent", "run-batch", "--config", args.config]
 
-    _add_model_args(cmd, get_model_args(args.model), "--agent.model")
+    add_model_cli_args(cmd, get_model_args(args.model), "--agent.model")
     cmd.extend(["--agent.model.per_instance_call_limit", str(args.call_limit)])
     cmd.extend(["--agent.model.per_instance_cost_limit", str(args.cost_limit)])
+    if args.bypass_cost_limits:
+        cmd.extend(["--agent.model.bypass_cost_limits", "True"])
 
     if args.summarizer_model:
-        _add_model_args(cmd, get_model_args(args.summarizer_model), "--agent.summary_model")
+        add_model_cli_args(cmd, get_model_args(args.summarizer_model), "--agent.summary_model")
         cmd.extend(["--agent.summary_model.per_instance_cost_limit", str(args.cost_limit)])
         cmd.extend(["--agent.summary_model.total_cost_limit", "0"])
+        if args.bypass_cost_limits:
+            cmd.extend(["--agent.summary_model.bypass_cost_limits", "True"])
 
     cmd.extend(["--instances.type", args.instances_type])
     cmd.extend(["--instances.subset", args.instances_subset])
@@ -208,11 +205,11 @@ def main():
         return 1
 
     preset = MODEL_PRESETS[args.model]
-    if _is_bedrock_model_name(preset.name):
+    if is_bedrock_model_name(preset.name):
         if not (os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION")):
             print("Warning: AWS_DEFAULT_REGION/AWS_REGION not set in environment (required for Bedrock)")
             print("Set one of them (e.g. AWS_DEFAULT_REGION=eu-west-2) or configure ~/.aws/config")
-        if not _has_bedrock_auth_env():
+        if not has_bedrock_auth_env():
             print("Warning: No Bedrock auth env vars detected (AWS_BEARER_TOKEN_BEDROCK / AWS_ACCESS_KEY_ID+AWS_SECRET_ACCESS_KEY / AWS_PROFILE).")
             print("If you rely on ~/.aws/credentials, SSO, or instance roles, you can ignore this.")
         if args.cost_limit > 0:
@@ -221,10 +218,10 @@ def main():
 
     if args.summarizer_model:
         sum_preset = MODEL_PRESETS.get(args.summarizer_model)
-        if sum_preset and _is_bedrock_model_name(sum_preset.name):
+        if sum_preset and is_bedrock_model_name(sum_preset.name):
             if not (os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION")):
                 print("Warning: AWS_DEFAULT_REGION/AWS_REGION not set in environment (required for Bedrock summarizer)")
-            if not _has_bedrock_auth_env():
+            if not has_bedrock_auth_env():
                 print("Warning: No Bedrock auth env vars detected for summarizer.")
                 print("If you rely on ~/.aws/credentials, SSO, or instance roles, you can ignore this.")
             if args.cost_limit > 0:
@@ -241,7 +238,7 @@ def main():
     if args.dry_run:
         return 0
 
-    if preset.api_key_var and not _is_bedrock_model_name(preset.name) and not os.environ.get(preset.api_key_var):
+    if preset.api_key_var and not is_bedrock_model_name(preset.name) and not os.environ.get(preset.api_key_var):
         print(f"Warning: {preset.api_key_var} not set in environment")
         print("Make sure to set it in .env or export it")
 
