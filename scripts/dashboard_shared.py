@@ -58,8 +58,12 @@ PAPER_BASELINES = {
         "llm_summary": {"solve_rate": 0.314, "avg_cost": 0.25, "rate_ci": 0.040, "cost_ci": 0.05,
                         "rate_delta": -0.223, "cost_delta": -0.554},
     },
-    # GLM-4.7: Our measured results on SWE-bench Verified-Mini (50 instances)
-    # Added to enable Δ vs raw comparison in TUI
+}
+
+# Our measured results (separate from paper baselines)
+# GLM-4.7 on SWE-bench Verified-Mini (50 instances per strategy)
+# Key finding: Context management HURTS GLM-4.7 (opposite of paper's qwen3-coder-480b results)
+OUR_BASELINES = {
     "glm-4.7": {
         "raw": {"solve_rate": 0.640, "avg_cost": 1.00, "rate_ci": 0.068, "cost_ci": 0.15},
         "observation_masking": {"solve_rate": 0.620, "avg_cost": 0.68, "rate_ci": 0.069, "cost_ci": 0.10,
@@ -108,6 +112,19 @@ def _unwrap_wandb_value(val):
     return val
 
 
+def _safe_float(val, default=np.nan):
+    """Convert value to float, returning default if not finite."""
+    if val is None:
+        return default
+    if isinstance(val, float) and not np.isfinite(val):
+        return default
+    try:
+        result = float(val)
+        return result if np.isfinite(result) else default
+    except (ValueError, TypeError):
+        return default
+
+
 def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) -> pd.DataFrame:
     """Fetch all runs from WandB as DataFrame."""
     import wandb
@@ -130,7 +147,16 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
             val = summary.get(key, default)
             return _unwrap_wandb_value(val)
 
-        eval_complete = bool(_get("eval_complete", False))
+        # wandb returns eval_complete in various formats
+        _eval_val = _get("eval_complete", False)
+        if isinstance(_eval_val, bool):
+            eval_complete = _eval_val
+        elif isinstance(_eval_val, (int, float)):
+            eval_complete = bool(_eval_val)
+        elif isinstance(_eval_val, str):
+            eval_complete = _eval_val.lower() in ("true", "1", "yes")
+        else:
+            eval_complete = False
 
         exit_summary = {
             key: _unwrap_wandb_value(val)
@@ -204,38 +230,38 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
             "run_name": r.name,
             "state": r.state,
             "created_at": r.created_at,
-            # Config
+
             "model": config.get("model", "unknown"),
             "strategy": config.get("strategy", "unknown"),
             "summarizer": config.get("summarizer_model", "same"),
             "instances_subset": config.get("instances_subset", "verified"),
             "eval_complete": eval_complete,
-            # Core metrics (unwrap WandB dicts)
+
             "n_instances": n_instances,
             "n_submitted": n_submitted,
             "n_resolved": n_resolved,
             "n_evaluated": n_evaluated,
-            # Rate metrics: use NaN for missing (None) to avoid biasing aggregations
-            "submission_rate": np.nan if (v := _get("submission_rate")) is None else v,
-            "resolved_rate": np.nan if (v := _get("resolved_rate")) is None else v,
-            "solve_rate": np.nan if (v := _get("solve_rate")) is None else v,
-            "eval_pass_rate": np.nan if (v := _get("eval_pass_rate")) is None else v,
-            "eval_coverage": np.nan if (v := _get("eval_coverage")) is None else v,
-            "avg_cost": np.nan if (v := _get("avg_cost")) is None else v,
-            "avg_turns": np.nan if (v := _get("avg_turns")) is None else v,
-            "cache_hit_rate": np.nan if (v := _get("cache_hit_rate")) is None else v,
-            "total_cost": np.nan if (v := _get("total_cost")) is None else v,
-            # Exit distribution (NOTE: forward slash in WandB names!)
-            "exit_submitted": _get("exit/submitted", 0),
-            "exit_cost": _get("exit/exit_cost", 0),
-            "exit_context": _get("exit/exit_context", 0),
-            "exit_timeout": _get("exit/exit_timeout", 0),
-            "exit_format": _get("exit/exit_format", 0),
-            "exit_other": exit_other,
-            # Cost breakdown
-            "total_agent_cost": np.nan if (v := _get("total_agent_cost")) is None else v,
-            "total_summary_cost": np.nan if (v := _get("total_summary_cost")) is None else v,
-            "summary_cost_fraction": _get("summary_cost_fraction", 0),
+            # NaN for missing to avoid biasing aggregations
+            "submission_rate": _safe_float(_get("submission_rate")),
+            "resolved_rate": _safe_float(_get("resolved_rate")),
+            "solve_rate": _safe_float(_get("solve_rate")),
+            "eval_pass_rate": _safe_float(_get("eval_pass_rate")),
+            "eval_coverage": _safe_float(_get("eval_coverage")),
+            "avg_cost": _safe_float(_get("avg_cost")),
+            "avg_turns": _safe_float(_get("avg_turns")),
+            "cache_hit_rate": _safe_float(_get("cache_hit_rate")),
+            "total_cost": _safe_float(_get("total_cost")),
+            # wandb uses forward slash in exit metric names
+            "exit_submitted": _num(_get("exit/submitted", 0)),
+            "exit_cost": _num(_get("exit/exit_cost", 0)),
+            "exit_context": _num(_get("exit/exit_context", 0)),
+            "exit_timeout": _num(_get("exit/exit_timeout", 0)),
+            "exit_format": _num(_get("exit/exit_format", 0)),
+            "exit_other": _num(exit_other),
+
+            "total_agent_cost": _safe_float(_get("total_agent_cost")),
+            "total_summary_cost": _safe_float(_get("total_summary_cost")),
+            "summary_cost_fraction": _safe_float(_get("summary_cost_fraction"), default=0.0),
         }
         records.append(record)
 

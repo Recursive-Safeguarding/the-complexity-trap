@@ -69,7 +69,6 @@ EXIT_COLORS = {
     "exit_other": ("Other", "dim", "?"),
 }
 
-
 def colorize_rate(rate: float) -> str:
     """Return colored rate string based on value."""
     if pd.isna(rate):
@@ -82,7 +81,6 @@ def colorize_rate(rate: float) -> str:
         return f"[bright_red]{rate:.1%}[/]"
     else:
         return f"[dim]{rate:.1%}[/]"
-
 
 def colorize_cost(cost: float, baseline: float | None = None) -> str:
     """Return colored cost string, optionally compared to baseline."""
@@ -102,11 +100,9 @@ def colorize_cost(cost: float, baseline: float | None = None) -> str:
 
     return f"[white]{cost_str}[/]"
 
-
 def colorize_delta(delta: float, is_cost: bool = False) -> str:
     """Return colored delta string. For cost, negative is good."""
     if is_cost:
-        # For cost: negative (reduction) is good
         if delta <= -30:
             return f"[bright_green]{delta:+.0f}%[/]"
         elif delta <= -10:
@@ -116,7 +112,6 @@ def colorize_delta(delta: float, is_cost: bool = False) -> str:
         else:
             return f"[white]{delta:+.0f}%[/]"
     else:
-        # For rate: positive is good
         if delta >= 0.05:
             return f"[bright_green]{delta:+.1%}[/]"
         elif delta >= 0:
@@ -126,9 +121,8 @@ def colorize_delta(delta: float, is_cost: bool = False) -> str:
         else:
             return f"[bright_red]{delta:+.1%}[/]"
 
-
 def build_comparison_table(df: pd.DataFrame) -> Table:
-    """Build Table 1 equivalent: Model×Strategy comparison with paper baselines."""
+    """Model x Strategy comparison table."""
     table = Table(
         title="[bold bright_cyan]📊 Model×Strategy Comparison with Paper[/]",
         box=box.ROUNDED,
@@ -154,12 +148,10 @@ def build_comparison_table(df: pd.DataFrame) -> Table:
     if eval_df.empty:
         return table
 
-    # Validate required columns
     required = {"model", "strategy", "solve_rate", "avg_cost", "n_instances", "n_resolved"}
     if not required.issubset(df.columns):
         return table
 
-    # Aggregate by model×strategy using instance-weighted averages
     def weighted_agg(group):
         n_total = group["n_instances"].sum()
         n_resolved = group["n_resolved"].sum()
@@ -177,17 +169,18 @@ def build_comparison_table(df: pd.DataFrame) -> Table:
     agg = eval_df.groupby(["model", "strategy"]).apply(weighted_agg, include_groups=False).reset_index()
 
     for _, row in agg.iterrows():
-        model = row["model"]
-        strategy = row["strategy"]
+        model = str(row["model"] or "")
+        strategy = str(row["strategy"] or "")
 
-        # Find matching paper baseline
+        # exact match first, then substring
         paper_model = None
-        best_match_len = 0
+        model_lower = model.lower()
         for pm in PAPER_BASELINES:
-            if pm in model.lower() or model.lower() in pm:
-                if len(pm) > best_match_len:
-                    paper_model = pm
-                    best_match_len = len(pm)
+            if pm == model_lower:
+                paper_model = pm
+                break
+            if paper_model is None and (pm in model_lower or model_lower in pm):
+                paper_model = pm
 
         paper_vals = (
             PAPER_BASELINES.get(paper_model, {}).get(strategy, {})
@@ -197,7 +190,6 @@ def build_comparison_table(df: pd.DataFrame) -> Table:
         paper_rate = paper_vals.get("solve_rate")
         paper_cost = paper_vals.get("avg_cost")
 
-        # Get RAW baseline for delta calculation (compare all strategies to raw)
         raw_vals = (
             PAPER_BASELINES.get(paper_model, {}).get("raw", {})
             if paper_model
@@ -206,7 +198,6 @@ def build_comparison_table(df: pd.DataFrame) -> Table:
         raw_rate = raw_vals.get("solve_rate")
         raw_cost = raw_vals.get("avg_cost")
 
-        # Calculate deltas vs RAW baseline (not vs same strategy)
         rate_delta_text = "[dim]—[/]"
         cost_delta_text = "[dim]—[/]"
         if raw_rate and row["solve_rate"] > 0:
@@ -230,9 +221,8 @@ def build_comparison_table(df: pd.DataFrame) -> Table:
 
     return table
 
-
 def build_runs_table(df: pd.DataFrame) -> Table:
-    """Build run explorer table."""
+    """Runs table."""
     table = Table(
         title="[bold bright_cyan]📋 All Runs[/]",
         box=box.ROUNDED,
@@ -253,7 +243,6 @@ def build_runs_table(df: pd.DataFrame) -> Table:
     if df.empty:
         return table
 
-    # Validate required columns
     required = {"run_name", "model", "strategy", "n_instances", "n_resolved", "solve_rate", "avg_cost", "avg_turns"}
     if not required.issubset(df.columns):
         return table
@@ -261,16 +250,15 @@ def build_runs_table(df: pd.DataFrame) -> Table:
     for _, row in df.iterrows():
         eval_complete = bool(row.get("eval_complete", True))
         resolved_color = "bright_green" if eval_complete and row["n_resolved"] > 0 else "dim"
-        # Handle NaN in avg_turns
         turns = row["avg_turns"]
         turns_str = f"{turns:.0f}" if pd.notna(turns) else "—"
         resolved_str = f"{int(row['n_resolved'])}" if eval_complete and pd.notna(row["n_resolved"]) else "—"
         rate_str = colorize_rate(row["solve_rate"]) if eval_complete else "[dim]—[/]"
 
         table.add_row(
-            row["run_name"][:22],
-            f"[bright_cyan]{row['model'][:14]}[/]",
-            f"[bright_magenta]{row['strategy']}[/]",
+            str(row["run_name"] or "")[:22],
+            f"[bright_cyan]{str(row['model'] or '')[:14]}[/]",
+            f"[bright_magenta]{str(row['strategy'] or '')}[/]",
             str(row["n_instances"]),
             f"[{resolved_color}]{resolved_str}[/]",
             rate_str,
@@ -280,9 +268,8 @@ def build_runs_table(df: pd.DataFrame) -> Table:
 
     return table
 
-
 def build_baselines_table() -> Table:
-    """Build paper baselines reference table."""
+    """Paper baselines table."""
     table = Table(
         title="[bold bright_cyan]📚 Paper Baselines (arXiv:2508.21433)[/]",
         box=box.ROUNDED,
@@ -303,10 +290,8 @@ def build_baselines_table() -> Table:
             rate_delta = vals.get("rate_delta")
             cost_delta = vals.get("cost_delta")
 
-            # Color the rate based on absolute value
             rate_str = colorize_rate(vals["solve_rate"])
 
-            # Cost coloring (lower is better)
             cost = vals["avg_cost"]
             if cost <= 0.3:
                 cost_str = f"[bright_green]${cost:.2f}[/]"
@@ -315,7 +300,6 @@ def build_baselines_table() -> Table:
             else:
                 cost_str = f"[white]${cost:.2f}[/]"
 
-            # Delta coloring
             if rate_delta is not None:
                 rate_delta_str = colorize_delta(rate_delta, is_cost=False)
             else:
@@ -337,14 +321,12 @@ def build_baselines_table() -> Table:
 
     return table
 
-
 def build_exit_panel(df: pd.DataFrame) -> Panel:
-    """Build colored exit status panel with bar chart."""
+    """Exit status panel."""
     if df.empty:
         return Panel("[dim]No data[/]", title="Exit Status")
 
     exit_cols = list(EXIT_COLORS.keys())
-    # Only use columns that exist in DataFrame
     exit_cols = [col for col in exit_cols if col in df.columns]
     if not exit_cols:
         return Panel("[dim]No exit data[/]", title="Exit Status")
@@ -372,15 +354,13 @@ def build_exit_panel(df: pd.DataFrame) -> Panel:
         padding=(1, 2),
     )
 
-
 def build_metrics_panel(df: pd.DataFrame) -> Panel:
-    """Build colorful metrics summary panel."""
+    """Metrics panel."""
     if df.empty:
         return Panel("[dim]No data[/]", title="📊 Summary", border_style="bright_blue")
 
     df = dedupe_latest_runs(df)
 
-    # Safe access with defaults for missing columns
     total_runs = len(df)
     models = df["model"].nunique() if "model" in df.columns else 0
     strategies = df["strategy"].nunique() if "strategy" in df.columns else 0
@@ -388,9 +368,16 @@ def build_metrics_panel(df: pd.DataFrame) -> Panel:
     best_rate = eval_df["solve_rate"].max() if "solve_rate" in eval_df.columns else 0
     total_instances = eval_df["n_instances"].sum() if "n_instances" in eval_df.columns else 0
     total_resolved = eval_df["n_resolved"].sum() if "n_resolved" in eval_df.columns else 0
-    avg_cost = df["avg_cost"].mean() if "avg_cost" in df.columns else 0
+    # use eval_df to match leaderboard/comparison tables
+    if "avg_cost" in eval_df.columns:
+        valid_costs = eval_df[eval_df["avg_cost"].notna() & (eval_df["n_instances"] > 0)]
+        if len(valid_costs) > 0:
+            avg_cost = (valid_costs["avg_cost"] * valid_costs["n_instances"]).sum() / valid_costs["n_instances"].sum()
+        else:
+            avg_cost = 0
+    else:
+        avg_cost = 0
 
-    # Create individual metric texts
     metrics = [
         f"[bold bright_cyan]Runs:[/] [bright_white]{total_runs}[/]",
         f"[bold bright_magenta]Models:[/] [bright_white]{models}[/]",
@@ -408,9 +395,8 @@ def build_metrics_panel(df: pd.DataFrame) -> Panel:
         padding=(0, 1),
     )
 
-
 def get_summary_stats(df: pd.DataFrame) -> dict:
-    """Extract key statistics for non-interactive output."""
+    """Summary stats dict."""
     if df.empty:
         return {
             "status": "empty",
@@ -425,13 +411,11 @@ def get_summary_stats(df: pd.DataFrame) -> dict:
         }
 
     def _safe_float(val, default=0.0):
-        """Convert to float, returning default if NaN/None."""
         if pd.isna(val):
             return default
         return float(val)
 
     def _weighted_cost(subset):
-        """Calculate instance-weighted average cost."""
         valid = subset[subset["avg_cost"].notna() & (subset["n_instances"] > 0)]
         if len(valid) == 0:
             return 0.0
@@ -440,7 +424,6 @@ def get_summary_stats(df: pd.DataFrame) -> dict:
     df = dedupe_latest_runs(df)
     eval_df = df[df["eval_complete"]] if "eval_complete" in df.columns else df
 
-    # Aggregate by strategy using weighted averages (evaluated runs only)
     by_strategy = {}
     if "strategy" in eval_df.columns:
         for strategy in eval_df["strategy"].unique():
@@ -455,7 +438,6 @@ def get_summary_stats(df: pd.DataFrame) -> dict:
                 "avg_cost": _safe_float(_weighted_cost(strat_df)),
             }
 
-    # Overall stats with weighted averages
     total_instances = int(eval_df["n_instances"].sum()) if "n_instances" in eval_df.columns else 0
     total_resolved = int(eval_df["n_resolved"].sum()) if "n_resolved" in eval_df.columns else 0
     overall_rate = total_resolved / total_instances if total_instances > 0 else 0.0
@@ -472,34 +454,29 @@ def get_summary_stats(df: pd.DataFrame) -> dict:
         "by_strategy": by_strategy,
     }
 
-
 def _sanitize_for_json(obj):
-    """Recursively replace NaN/inf with None and convert numpy types for valid JSON."""
+    """JSON-safe dict (NaN -> None, numpy -> Python types)."""
     if isinstance(obj, dict):
         return {k: _sanitize_for_json(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [_sanitize_for_json(v) for v in obj]
     elif isinstance(obj, (float, np.floating)):
-        # Handle both Python float and numpy floats (np.float64, etc.)
         if pd.isna(obj) or np.isinf(obj):
             return None
-        return float(obj)  # Convert to Python float for JSON
+        return float(obj)
     elif isinstance(obj, (int, np.integer)):
-        return int(obj)  # Convert numpy int to Python int
+        return int(obj)
     elif isinstance(obj, (bool, np.bool_)):
-        return bool(obj)  # Convert numpy bool to Python bool
+        return bool(obj)
     return obj
 
-
 def output_json(df: pd.DataFrame, project: str, entity: str | None) -> None:
-    """Output full JSON data (valid JSON with null for missing values)."""
+    """JSON output."""
     stats = get_summary_stats(df)
 
-    # Add run details
     runs = []
     if not df.empty:
         for _, row in df.iterrows():
-            # Get values with explicit NaN handling
             solve_rate = row.get("solve_rate")
             avg_cost = row.get("avg_cost")
             avg_turns = row.get("avg_turns")
@@ -518,7 +495,7 @@ def output_json(df: pd.DataFrame, project: str, entity: str | None) -> None:
     output = {
         "project": project,
         "entity": entity,
-        "summary": _sanitize_for_json(stats),  # Sanitize nested NaN values
+        "summary": _sanitize_for_json(stats),
         "summary_deduped": True,
         "runs": runs,
         "paper_baselines": PAPER_BASELINES,
@@ -526,21 +503,18 @@ def output_json(df: pd.DataFrame, project: str, entity: str | None) -> None:
 
     print(json.dumps(output, indent=2))
 
-
 def output_summary(df: pd.DataFrame, project: str) -> None:
-    """Output single-line summary for scripts/automation."""
+    """One-line summary."""
     stats = get_summary_stats(df)
 
     if stats["status"] == "empty":
         print(f"[{project}] No runs found")
         return
 
-    # Format: [project] runs=N models=M best=X% resolved=R/I avg_cost=$C
     best_pct = stats["best_rate"] * 100
     avg_cost = stats["avg_cost"]
     cost_str = f"${avg_cost:.2f}" if avg_cost > 0 else "N/A"
 
-    # Strategy breakdown
     strat_parts = []
     for strat, data in stats["by_strategy"].items():
         rate_pct = data["solve_rate"] * 100
@@ -558,9 +532,8 @@ def output_summary(df: pd.DataFrame, project: str) -> None:
         f"(deduped)"
     )
 
-
 def output_compact(df: pd.DataFrame, project: str, entity: str | None) -> None:
-    """Output compact multi-line summary."""
+    """Compact summary."""
     stats = get_summary_stats(df)
 
     print(f"=== {project} {'(' + entity + ')' if entity else ''} (deduped) ===")
@@ -580,9 +553,7 @@ def output_compact(df: pd.DataFrame, project: str, entity: str | None) -> None:
             cost_str = f"${data['avg_cost']:.2f}" if data['avg_cost'] > 0 else "N/A"
             print(f"  {strat:20} rate={data['solve_rate']:5.1%} resolved={data['resolved']:3}/{data['instances']:<3} cost={cost_str}")
 
-
 def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description="Complexity Trap TUI Dashboard",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -619,19 +590,16 @@ Examples:
 
     return parser.parse_args()
 
-
 def main():
     load_dotenv()
     args = parse_args()
 
-    # Get project config, with CLI overrides
     project, entity = get_project_config()
     if args.project:
         project = args.project
     if args.entity:
         entity = args.entity
 
-    # Determine if we're in non-interactive mode
     non_interactive = args.view is not None
 
     if not project:
@@ -647,16 +615,13 @@ def main():
         ))
         return
 
-    # Fetch data
     if non_interactive:
-        # Silent fetch for non-interactive modes
         try:
             df = fetch_runs(project, entity, use_cache=False)
         except Exception as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 
-        # Output in requested format
         if args.view == "json":
             output_json(df, project, entity)
         elif args.view == "summary":
@@ -665,8 +630,6 @@ def main():
             output_compact(df, project, entity)
         return
 
-    # Interactive TUI mode below
-    # Header
     console.print()
     console.print(Panel(
         f"[bold bright_white]The Complexity Trap[/] │ "
@@ -677,7 +640,6 @@ def main():
     ))
     console.print()
 
-    # Fetch data with spinner
     with console.status("[bold bright_green]⏳ Fetching data from WandB...[/]", spinner="dots"):
         try:
             df = fetch_runs(project, entity, use_cache=False)
@@ -698,35 +660,28 @@ def main():
         ))
         return
 
-    # Metrics summary (deduped by run_name)
     console.print(build_metrics_panel(df))
     console.print()
 
-    # Exit status chart (deduped by run_name)
     console.print(build_exit_panel(dedupe_latest_runs(df)))
     console.print()
 
-    # Paper comparison table (deduped by run_name)
     console.print(build_comparison_table(dedupe_latest_runs(df)))
     console.print()
 
-    # Run explorer (optional duplicates)
     runs_df = df if args.all_runs else dedupe_latest_runs(df)
     console.print(build_runs_table(runs_df))
     console.print()
 
-    # Paper baselines
     console.print(build_baselines_table())
     console.print()
 
-    # Footer
     console.print(Panel(
         "[dim]Data source: WandB │ Paper: arXiv:2508.21433 │ "
         "Press [bright_cyan]Ctrl+C[/] to exit[/]",
         border_style="dim",
     ))
     console.print()
-
 
 if __name__ == "__main__":
     main()
