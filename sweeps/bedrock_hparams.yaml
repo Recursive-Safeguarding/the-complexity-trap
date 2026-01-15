@@ -2,7 +2,7 @@
 
 program: scripts/run_sweep.py
 method: grid
-metric: {name: submission_rate, goal: maximize}
+metric: {name: solve_rate, goal: maximize}
 
 parameters:
   model: {value: bedrock-qwen3-32b}
@@ -26,4 +26,5 @@ command:
   - ${program}
   - ${args}
   - --wandb
-  - --wandb-project=complexity-trap-bedrock-hparams
+  - --wandb-project=the-complexity-trap
+  - --evaluate

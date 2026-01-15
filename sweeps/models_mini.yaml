@@ -4,13 +4,13 @@
 
 program: scripts/run_sweep.py
 method: bayes
-metric: {name: submission_rate, goal: maximize}
+metric: {name: solve_rate, goal: maximize}
 early_terminate: {type: hyperband, min_iter: 3, eta: 2, s: 2}
 
 parameters:
-  model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.6, kimi-k2, minimax-m2, gpt-4o-mini]}
+  model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.7, kimi-k2, minimax-m2.1, gpt-4o-mini]}
   strategy: {values: [raw, observation_masking, llm_summary, hybrid]}
-  summarizer-model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.6, kimi-k2, minimax-m2, gpt-4o-mini]}
+  summarizer-model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.7, kimi-k2, minimax-m2.1, gpt-4o-mini]}
 
   # observation_masking, hybrid
   hp-obs-n: {values: [5, 10, 15]}
@@ -26,6 +26,7 @@ parameters:
   instances-shuffle-seed: {value: 42}
   call-limit: {value: 250}
   cost-limit: {value: 3.0}
+  bypass-cost-limits: {value: true}  # GLM, Kimi, MiniMax are on coding plans; cost still tracked for paid models
   num-workers: {value: 1}
 
 command:
@@ -34,4 +35,5 @@ command:
   - ${program}
   - ${args}
   - --wandb
-  - --wandb-project=complexity-trap-mini
+  - --wandb-project=the-complexity-trap
+  - --evaluate

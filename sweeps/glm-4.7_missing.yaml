@@ -1,0 +1,28 @@
+# Complete missing GLM-4.7 summarizer configs
+# 2 strategies × 2 summarizers = 4 runs (3 actually needed)
+# Missing: llm_summary+glm-4.7, hybrid+glm-4.7, hybrid+kimi-k2
+
+program: scripts/run_sweep.py
+method: grid
+metric: {name: solve_rate, goal: maximize}
+
+parameters:
+  model: {value: glm-4.7}
+  strategy: {values: [llm_summary, hybrid]}
+  summarizer-model: {values: [glm-4.7, kimi-k2]}
+  instances-subset: {value: verified-mini}
+  instances-shuffle: {value: false}
+  call-limit: {value: 250}
+  cost-limit: {value: 0.0}
+  num-workers: {value: 1}
+  hp-obs-n: {value: 10}
+  hp-sum-n: {value: 21}
+  hp-sum-keep-m: {value: 10}
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - ${args}
+  - --wandb
+  - --wandb-project=the-complexity-trap

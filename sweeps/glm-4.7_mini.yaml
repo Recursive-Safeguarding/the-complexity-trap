@@ -1,16 +1,16 @@
-# GLM-4.6 Bayesian search on verified-mini (50 curated instances)
+# GLM-4.7 Bayesian search on verified-mini (50 curated instances)
 # 1 model × 4 strategies × 6 summarizers = 14 effective combinations
 # (raw/obs_masking ignore summarizer: 1+1+6+6=14)
 
 program: scripts/run_sweep.py
 method: bayes
-metric: {name: submission_rate, goal: maximize}
+metric: {name: solve_rate, goal: maximize}
 early_terminate: {type: hyperband, min_iter: 3, eta: 2, s: 2}
 
 parameters:
-  model: {value: glm-4.6}
+  model: {value: glm-4.7}
   strategy: {values: [raw, observation_masking, llm_summary, hybrid]}
-  summarizer-model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.6, kimi-k2, minimax-m2, gpt-4o-mini]}
+  summarizer-model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.7, kimi-k2, minimax-m2.1, gpt-4o-mini]}
 
   # observation_masking, hybrid
   hp-obs-n: {values: [5, 10, 15]}
@@ -25,7 +25,7 @@ parameters:
   instances-shuffle: {value: true}
   instances-shuffle-seed: {value: 42}
   call-limit: {value: 250}
-  cost-limit: {value: 3.0}
+  cost-limit: {value: 0}  # No cost limit - GLM-4.7 is on coding plan
   num-workers: {value: 1}
 
 command:
@@ -34,4 +34,6 @@ command:
   - ${program}
   - ${args}
   - --wandb
-  - --wandb-project=complexity-trap-glm
+  - --wandb-project=the-complexity-trap
+  # NOTE: --evaluate disabled due to Docker hanging (2025-12-27)
+  # Run evaluation separately after trajectories complete

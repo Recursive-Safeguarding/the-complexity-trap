@@ -47,7 +47,7 @@ wandb agent <your-entity>/complexity-trap-test/<sweep_id> --count 5
 |--------|----------|-------|
 | `deepseek-chat` | DeepSeek | V3, very cheap |
 | `gpt-4o-mini` | OpenAI | Cheap, reliable |
-| `glm-4.6` | ZhipuAI | Via Z.AI endpoint |
+| `glm-4.7` | ZhipuAI | Latest version via Z.AI endpoint |
 | `kimi-k2` | Moonshot | Anthropic-compatible |
 
 ## Direct Usage (No Sweep)
@@ -70,9 +70,66 @@ python scripts/run_sweep.py \
 
 ## Metrics Logged to WandB
 
+### Primary Metrics (The Ones That Matter)
+
+| Metric | Formula | What It Tells You |
+|--------|---------|-------------------|
+| **`solve_rate`** | `n_resolved / n_instances` | **Paper's primary metric.** Overall success rate. |
+| `eval_pass_rate` | `n_resolved / n_evaluated` | Pass rate among instances that submitted patches. |
+| `eval_coverage` | `n_evaluated / n_instances` | Fraction of instances that produced evaluable patches. |
+| `avg_cost` | `total_cost / n_instances` | Average USD cost per instance. |
+| `submission_rate` | `n_submitted / n_instances` | Fraction that submitted patches (before evaluation). |
+
+**Key insight:** `solve_rate = eval_pass_rate × eval_coverage`
+
+- High coverage + low pass rate → agent produces patches that don't work
+- Low coverage → agent gets stuck before producing patches
+- Goal: maximize both
+
+### Evaluation Metrics
+
+Logged after running SWE-bench evaluation (Docker-based):
+
+| Metric | Description |
+|--------|-------------|
+| `n_resolved` | Instances where the patch fixed the bug |
+| `n_evaluated` | Instances with patches that were evaluated |
+| `eval_pass_rate` | `n_resolved / n_evaluated` |
+| `eval_coverage` | `n_evaluated / n_instances` |
+| `solve_rate` | `n_resolved / n_instances` (primary paper metric) |
+| `eval_complete` | `true` after final evaluation finishes |
+
+### Repository Distribution (`repo/*`)
+
+Counts instances by source repository:
+
+| Metric | Description |
+|--------|-------------|
+| `repo/django` | Instances from django/django |
+| `repo/flask` | Instances from pallets/flask |
+| `repo/sympy` | Instances from sympy/sympy |
+| `repo/sphinx` | Instances from sphinx-doc/sphinx |
+| ... | (one metric per repository in SWE-bench) |
+
+Extracted from `instance_id` (e.g., `django__django-12345` → `repo/django`). Useful for spotting if certain repos are harder.
+
+### Turn Statistics
+
+| Metric | Description |
+|--------|-------------|
+| `turn_median` | Median turns across instances |
+| `turn_std` | Standard deviation of turn counts |
+| `turn_min` | Minimum turns for any instance |
+| `turn_max` | Maximum turns for any instance |
+| `turn_distribution` | Histogram of turn counts |
+
+---
+
+### X-Axis Configuration
+
 X-axes are set via `wandb.define_metric()`:
 - `step/*`, `instance/*`, `cumulative/*` → `global_step` (agent turns)
-- `total_*`, `avg_*`, `exit/*` → `n_instances`
+- `total_*`, `avg_*`, `exit/*`, `repo/*`, `turn_*` → `n_instances`
 
 ### Per-Step Metrics (`global_step` x-axis)
 
@@ -110,10 +167,14 @@ Additional `instance/*` and `cumulative/*` metrics:
 | `avg_turns` | Average agent turns per instance |
 | `avg_api_calls` | Average API calls per instance |
 | `avg_tokens_per_turn` | Token efficiency metric |
+| `avg_patch_lines` | Average patch size (non-empty lines) |
+| `avg_duration_ms` | Average instance duration |
 | `total_turns` | Total agent turns |
 | `total_api_calls` | Total agent API calls |
 | `total_summary_api_calls` | Summarizer API calls |
 | `total_rloop_api_calls` | Retry loop API calls |
+| `total_patch_lines` | Total lines across all patches |
+| `total_duration_ms` | Total execution time |
 
 ### Cost Breakdown
 
@@ -161,29 +222,23 @@ Why instances terminated. For `"submitted (exit_cost)"`, the category is `exit_c
 ### Per-Instance Table
 
 A WandB Table (`instances`) with per-instance details:
-- `instance_id`, `exit_status`, `exit_category`, `submitted`, `n_turns`
+- `instance_id`, `repo`, `exit_status`, `exit_category`, `submitted`, `n_turns`
 - `total_cost`, `agent_cost`, `summary_cost`, `rloop_cost`
 - `agent_api_calls`, `summary_api_calls`, `rloop_api_calls`
 - `raw_input_tokens`, `cached_input_tokens`, `output_tokens`, `internal_reasoning_tokens`
 - `summary_raw_input_tokens`, `summary_cached_input_tokens`, `summary_output_tokens`
-- `cache_hit_rate` (per-instance)
+- `cache_hit_rate`, `patch_lines`, `instance_duration_ms`, `tokens_per_turn`
 - `review_score` (if using ScoreRetryLoop)
 
 ## Weave (LLM Tracing)
 
-`scripts/run_sweep.py` enables Weave tracing by default. This records LLM calls (via LiteLLM) so you can inspect token usage, latency, and prompts/responses in the Weave UI alongside the corresponding WandB run.
-
-To disable Weave (e.g., if you don't want tracing overhead):
+Weave tracing is **disabled by default** (WandB already logs the same metrics). To enable:
 
 ```bash
-python scripts/run_sweep.py --model deepseek-chat --strategy raw --no-weave --wandb
+python scripts/run_sweep.py --model deepseek-chat --strategy raw --weave --wandb
 ```
 
-(Note: Weave tracing requires running `sweagent` **in-process**. If you switch to subprocess execution, Weave will not trace the child process.)
-
-```bash
-python scripts/run_sweep.py --model deepseek-chat --strategy raw --wandb --execution subprocess
-```
+Weave records LLM calls (via LiteLLM) for detailed inspection of prompts/responses. Requires in-process execution (default).
 
 ## Parse Existing Trajectories
 
@@ -237,9 +292,7 @@ The paper used fixed values (o=10, s=21, k=10) without tuning. Our sweeps includ
 
 ### Constraints
 
-`k < s` required — you can't keep more messages than the summarization interval. With k=15 and s=10, you'd keep 15 messages but summarize every 10 turns, which is nonsense.
-
-Sweep configs enforce this: s_min=15, k_max=12.
+Sweeps use `k < s` (matching paper). Config bounds: s_min=15, k_max=12.
 
 ### Value Selection
 

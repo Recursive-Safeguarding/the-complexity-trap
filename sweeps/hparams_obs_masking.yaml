@@ -2,10 +2,10 @@
 
 program: scripts/run_sweep.py
 method: grid
-metric: {name: submission_rate, goal: maximize}
+metric: {name: solve_rate, goal: maximize}
 
 parameters:
-  model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.6, kimi-k2, minimax-m2, gpt-4o-mini]}
+  model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.7, kimi-k2, minimax-m2.1, gpt-4o-mini]}
   strategy: {value: observation_masking}
   instances-subset: {value: verified-mini}
   instances-shuffle: {value: true}
@@ -21,4 +21,5 @@ command:
   - ${program}
   - ${args}
   - --wandb
-  - --wandb-project=complexity-trap-hparams
+  - --wandb-project=the-complexity-trap
+  - --evaluate

@@ -1,0 +1,28 @@
+# GLM-4.7 + MiniMax M2.1 summarizer retry
+# 2 strategies (llm_summary, hybrid) × 1 summarizer = 2 runs
+# Retrying crashed runs from sweep h1epxlrq
+
+program: scripts/run_sweep.py
+method: grid
+metric: {name: solve_rate, goal: maximize}
+
+parameters:
+  model: {value: glm-4.7}
+  strategy: {values: [llm_summary, hybrid]}
+  summarizer-model: {value: minimax-m2.1}
+  instances-subset: {value: verified-mini}
+  instances-shuffle: {value: false}
+  call-limit: {value: 250}
+  cost-limit: {value: 0.0}
+  num-workers: {value: 1}
+  hp-obs-n: {value: 10}
+  hp-sum-n: {value: 21}
+  hp-sum-keep-m: {value: 10}
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - ${args}
+  - --wandb
+  - --wandb-project=the-complexity-trap
