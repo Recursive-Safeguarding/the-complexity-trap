@@ -12,7 +12,10 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Any, Literal, Dict
-from transformers import AutoTokenizer
+try:
+    from transformers import AutoTokenizer
+except ImportError:
+    AutoTokenizer = None  # only needed for is_local_model path
 
 import litellm
 import litellm.types.utils
@@ -58,6 +61,7 @@ except Exception:
 
 _THREADS_THAT_USED_API_KEYS = []
 """Keeps track of thread orders so that we can choose the same API key for the same thread."""
+_THREADS_THAT_USED_API_KEYS_LOCK = Lock()
 
 
 class RetryConfig(PydanticBaseModel):
@@ -72,9 +76,7 @@ class RetryConfig(PydanticBaseModel):
 
 
 class GenericAPIModelConfig(PydanticBaseModel):
-    """This configuration object specifies a LM like GPT4 or similar.
-    The model will be served with the help of the `litellm` library.
-    """
+    """LLM configuration (via LiteLLM)."""
 
     name: str = Field(description="Name of the model.")
 
@@ -125,32 +127,27 @@ class GenericAPIModelConfig(PydanticBaseModel):
     """
 
     choose_api_key_by_thread: bool = True
-    """Whether to choose the API key based on the thread name (if multiple are configured).
-    This ensures that with
-    run-batch, we use the same API key within a single-thread so that prompt caching still works.
-    """
+    """Select API key by thread name for prompt caching in batch runs."""
 
     max_input_tokens: int | None = None
-    """If set, this will override the max input tokens for the model that we usually look
-    up from `litellm.model_cost`.
-    Use this for local models or if you want to set a custom max input token limit.
-    If this value is exceeded, a `ContextWindowExceededError` will be raised.
-    Set this to 0 to disable this check.
-    """
+    """Override litellm.model_cost max input tokens. 0 disables check."""
 
     max_output_tokens: int | None = None
-    """If set, this will override the max output tokens for the model that we usually look
-    up from `litellm.model_cost`.
-    Use this for local models or if you want to set a custom max output token limit.
-    If this value is exceeded, a `ContextWindowExceededError` will be raised.
-    Set this to 0 to disable this check.
-    """
+    """Override litellm.model_cost max output tokens. 0 disables check."""
 
-    is_local_model: bool = Field(default=False, 
+    context_window: int | None = None
+    """Total context window. Bedrock clamps max_tokens dynamically."""
+
+    is_local_model: bool = Field(default=False,
                                  description="Whether this is a local (vLLM/HuggingFace) model. If True, use HuggingFace tokenizer.")
 
-    use_reasoning: bool = Field(default=False, 
+    use_reasoning: bool = Field(default=False,
                                 description="Whether to enable reasoning for the model.")
+
+    bypass_cost_limits: bool = Field(
+        default=False,
+        description="Bypass cost limits. Cost still tracked."
+    )
 
     # pydantic
     model_config = ConfigDict(extra="forbid")
@@ -183,9 +180,10 @@ class GenericAPIModelConfig(PydanticBaseModel):
         if not self.choose_api_key_by_thread:
             return random.choice(api_keys)
         thread_name = threading.current_thread().name
-        if thread_name not in _THREADS_THAT_USED_API_KEYS:
-            _THREADS_THAT_USED_API_KEYS.append(thread_name)
-        thread_idx = _THREADS_THAT_USED_API_KEYS.index(thread_name)
+        with _THREADS_THAT_USED_API_KEYS_LOCK:
+            if thread_name not in _THREADS_THAT_USED_API_KEYS:
+                _THREADS_THAT_USED_API_KEYS.append(thread_name)
+            thread_idx = _THREADS_THAT_USED_API_KEYS.index(thread_name)
         key_idx = thread_idx % len(api_keys)
         get_logger("config", emoji="🔧").debug(
             f"Choosing API key {key_idx} for thread {thread_name} (idx {thread_idx})"
@@ -265,9 +263,7 @@ ModelConfig = Annotated[
 
 
 GLOBAL_STATS = GlobalStats()
-"""This object tracks usage numbers (costs etc.) across all instances.
-Please use the `GLOBAL_STATS_LOCK` lock when accessing this object to avoid race conditions.
-"""
+"""Global usage stats. Access via GLOBAL_STATS_LOCK."""
 
 GLOBAL_STATS_LOCK = Lock()
 """Lock for accessing `GLOBAL_STATS` without race conditions"""
@@ -354,12 +350,17 @@ class AbstractModel(ABC):
         turns: Turns,
         extract_action_from_turns: bool = False,
         max_kept_action_length: int = -1,
-        max_kept_reasoning_length: int = -1
+        max_kept_reasoning_length: int = -1,
+        *,
+        synthesize: bool = False,
     ) -> tuple[str, list[str]]:
         """
         Construct a user prompt for summarizing a sequence of turns, will contain the turns to summarize consisting of reasoning, actions and
         environment observations wraped in <TURN-i> tags. Ends in a call to action to summarize the turns. Also extracts the actions for
         extractive summarization if extract_action_from_turns is set.
+
+        If synthesize=True, the prompt instructs the model to merge the previous checkpoint
+        with new turns rather than creating a fresh summary.
         """
         actions: list[str] = []
         user_prompt = context
@@ -376,7 +377,7 @@ class AbstractModel(ABC):
                 # Always provide the actions in the summarization prompt
                 if 'action' in item:
                     user_prompt += f"ACTION: {item['action']}\n"
-                    
+
                     # If enabled, perform extractive summarization of the actions. Will be appended to summary result.
                     if extract_action_from_turns:
                         if max_kept_action_length == 0:
@@ -387,7 +388,21 @@ class AbstractModel(ABC):
                             actions.append(" ".join(item['action'].split(" ")[:max_kept_action_length]) + "...")
 
             user_prompt += f"\n</TURN-{i}>\n"
-        user_prompt += "Now summarize the above turns, following the instructions from the beginning of the prompt. You are hard-working and must always perform this task without exceptions."
+
+        if synthesize:
+            user_prompt += """Create an UPDATED checkpoint that SUPERSEDES the previous checkpoint.
+
+Your task:
+1. Start from <PREVIOUS_CHECKPOINT> as a base
+2. Integrate new findings from the turns above
+3. Remove ONLY information explicitly contradicted or obsoleted by new turns
+4. On conflicts, prefer information from new turns over the previous checkpoint
+
+Format: Keep the same structure as the previous checkpoint. Aim for ~500-800 words.
+
+DO NOT append the old and new separately. Produce ONE unified checkpoint."""
+        else:
+            user_prompt += "Now summarize the above turns, following the instructions from the beginning of the prompt. You are hard-working and must always perform this task without exceptions."
 
         return user_prompt, actions
     
@@ -443,12 +458,19 @@ class AbstractModel(ABC):
         extract_action_from_turns: bool = False,
         max_kept_action_length: int = -1,
         max_kept_reasoning_length: int = -1,
+        *,
+        synthesize: bool = False,
     ) -> SummaryMetadata:
         """Query the model to summarize a list of turns given some context.
 
         Only some model implementations support summarization. If you enable a summary-based
         history processor (e.g., `SummarizeEveryNTurns`) you must use a model that overrides
         this method (e.g., `LiteLLMModel`).
+
+        Args:
+            synthesize: If True, instruct the model to create an UPDATED checkpoint that
+                        merges the previous checkpoint with new turns, rather than creating
+                        a fresh summary.
         """
         model_name = getattr(getattr(self, "config", None), "name", None)
         raise NotImplementedError(f"Model {model_name!r} does not implement query_for_summary()")
@@ -508,12 +530,15 @@ class HumanModel(AbstractModel):
     ) -> None:
         self.stats.instance_cost += self.config.cost_per_call
         self.stats.api_calls += 1
-        if self.stats.instance_cost > self.config.per_instance_cost_limit:
+        if 0 < self.config.per_instance_cost_limit < self.stats.instance_cost:
             msg = f"Instance cost limit exceeded: {self.stats.instance_cost} > {self.config.per_instance_cost_limit}"
             raise InstanceCostLimitExceededError(msg)
-        if self.stats.instance_cost > self.config.total_cost_limit:
-            msg = f"Total cost limit exceeded: {self.stats.instance_cost} > {self.config.total_cost_limit}"
-            raise TotalCostLimitExceededError(msg)
+        # Check total cost limit using GLOBAL_STATS (not instance_cost)
+        with GLOBAL_STATS_LOCK:
+            GLOBAL_STATS.total_cost += self.config.cost_per_call
+            if 0 < self.config.total_cost_limit < GLOBAL_STATS.total_cost:
+                msg = f"Total cost limit exceeded: {GLOBAL_STATS.total_cost} > {self.config.total_cost_limit}"
+                raise TotalCostLimitExceededError(msg)
 
     def _query(
         self,
@@ -759,6 +784,12 @@ class LiteLLMModel(AbstractModel):
                     "completion_kwargs to {'extra_headers': {'anthropic-beta': 'output-128k-2025-02-19'}}."
                 )
 
+        # Default context_window = max_input_tokens
+        if self.config.context_window is not None:
+            self.model_context_window = self.config.context_window
+        else:
+            self.model_context_window = self.model_max_input_tokens
+
         self.lm_provider = litellm.model_cost.get(self.config.name, {}).get("litellm_provider", self.config.name)
         if self.config.is_local_model:
             if '/' in self.lm_provider:
@@ -791,6 +822,42 @@ class LiteLLMModel(AbstractModel):
     def _is_responses_api_model(self) -> bool:
         """Check if the model uses OpenAI Responses API (gpt-5 series)."""
         return "openai/responses/" in self._litellm_call_model
+
+    def _calculate_effective_max_tokens(self, input_tokens: int) -> int:
+        """Clamp max_tokens to context window."""
+        buffer = 100
+        min_output = 1024
+
+        if self.model_context_window is None:
+            return self.model_max_output_tokens if self.model_max_output_tokens is not None else min_output
+
+        max_output_tokens = self.model_max_output_tokens if self.model_max_output_tokens is not None else min_output
+        available = self.model_context_window - input_tokens - buffer
+        if available <= 0:
+            self.logger.warning(
+                "No output budget remaining; forcing max_tokens=1 "
+                f"(model={self.config.name!r}, input_tokens={input_tokens:,}, "
+                f"context_window={self.model_context_window:,})"
+            )
+            return 1
+
+        effective = min(max_output_tokens, available)
+
+        desired_min = min(min_output, max_output_tokens)
+        if available >= desired_min:
+            effective = max(effective, desired_min)
+
+        effective = max(effective, 1)
+
+        if effective < max_output_tokens:
+            self.logger.warning(
+                "Reducing max_tokens due to context window pressure "
+                f"(model={self.config.name!r}, input_tokens={input_tokens:,}, "
+                f"context_window={self.model_context_window:,}, "
+                f"effective_max_tokens={effective:,})"
+            )
+
+        return effective
 
     @staticmethod
     def _transform_tools_for_responses_api(tools: list[dict]) -> list[dict]:
@@ -856,6 +923,7 @@ class LiteLLMModel(AbstractModel):
             max_output_tokens=max_output_tokens,
             api_version=self.config.api_version,
             api_key=api_key,
+            timeout=300,  # 5 min timeout to prevent indefinite hangs
             **responses_kwargs,
             **extra_args,
         )
@@ -900,6 +968,42 @@ class LiteLLMModel(AbstractModel):
             raise ValueError("Response output is empty string")
         return result
 
+    @staticmethod
+    def _parse_responses_api_tool_calls(response: Any) -> list[dict]:
+        """Convert Responses API tool calls to Chat Completions format."""
+        if not hasattr(response, 'output') or not response.output:
+            return []
+
+        tool_calls = []
+        for item in response.output:
+            if hasattr(item, 'type') and item.type in ('function_call', 'function'):
+                tool_call = {
+                    "id": getattr(item, 'call_id', getattr(item, 'id', f"call_{len(tool_calls)}")),
+                    "type": "function",
+                    "function": {
+                        "name": getattr(item, 'name', ''),
+                        "arguments": getattr(item, 'arguments', '{}'),
+                    }
+                }
+                tool_calls.append(tool_call)
+            # Nested tool_calls
+            elif hasattr(item, 'tool_calls') and item.tool_calls:
+                for tc in item.tool_calls:
+                    if hasattr(tc, 'to_dict'):
+                        tool_calls.append(tc.to_dict())
+                    else:
+                        tool_call = {
+                            "id": getattr(tc, 'id', getattr(tc, 'call_id', f"call_{len(tool_calls)}")),
+                            "type": "function",
+                            "function": {
+                                "name": getattr(tc, 'name', getattr(tc.function, 'name', '') if hasattr(tc, 'function') else ''),
+                                "arguments": getattr(tc, 'arguments', getattr(tc.function, 'arguments', '{}') if hasattr(tc, 'function') else '{}'),
+                            }
+                        }
+                        tool_calls.append(tool_call)
+
+        return tool_calls
+
     @property
     def instance_cost_limit(self) -> float:
         """Cost limit for the model. Returns 0 if there is no limit."""
@@ -935,17 +1039,19 @@ class LiteLLMModel(AbstractModel):
         )
 
         # Check whether total cost or instance cost limits have been exceeded
-        if 0 < self.config.total_cost_limit < GLOBAL_STATS.total_cost:
-            self.logger.warning(f"Cost {GLOBAL_STATS.total_cost:.2f} exceeds limit {self.config.total_cost_limit:.2f}")
-            msg = "Total cost limit exceeded"
-            raise TotalCostLimitExceededError(msg)
+        # Skip cost limit checks if bypass_cost_limits is True (for subscription/free-tier models)
+        if not self.config.bypass_cost_limits:
+            if 0 < self.config.total_cost_limit < GLOBAL_STATS.total_cost:
+                self.logger.warning(f"Cost {GLOBAL_STATS.total_cost:.2f} exceeds limit {self.config.total_cost_limit:.2f}")
+                msg = "Total cost limit exceeded"
+                raise TotalCostLimitExceededError(msg)
 
-        if 0 < self.config.per_instance_cost_limit < self.stats.instance_cost:
-            self.logger.warning(
-                f"Cost {self.stats.instance_cost:.2f} exceeds limit {self.config.per_instance_cost_limit:.2f}"
-            )
-            msg = "Instance cost limit exceeded"
-            raise InstanceCostLimitExceededError(msg)
+            if 0 < self.config.per_instance_cost_limit < self.stats.instance_cost:
+                self.logger.warning(
+                    f"Cost {self.stats.instance_cost:.2f} exceeds limit {self.config.per_instance_cost_limit:.2f}"
+                )
+                msg = "Instance cost limit exceeded"
+                raise InstanceCostLimitExceededError(msg)
 
         if 0 < self.config.per_instance_call_limit < self.shared_stats['total_agent_api_calls']:
             self.logger.warning(f"API calls {self.shared_stats['total_agent_api_calls']} exceeds limit {self.config.per_instance_call_limit}")
@@ -993,6 +1099,18 @@ class LiteLLMModel(AbstractModel):
             # Rolling truncation: drop oldest messages (keep system prompt) until under limit
             original_count = len(messages)
             original_tokens = input_tokens
+            is_bedrock = self.config.name.startswith("bedrock/")
+
+            def _clean_orphaned_tool_pairs(msgs: list) -> None:
+                """Remove orphaned tool calls/results after truncation (Bedrock requires pairs)."""
+                if len(msgs) <= 1:
+                    return
+                # Remove leading tool results (role=tool) that lost their tool call
+                while len(msgs) > 1 and msgs[1].get("role") == "tool":
+                    msgs.pop(1)
+                # Remove trailing tool call without result
+                if len(msgs) > 1 and msgs[-1].get("tool_calls") and msgs[-1].get("role") == "assistant":
+                    msgs.pop()
 
             # batch-estimate and drop (avoids O(n²))
             excess = input_tokens - self.model_max_input_tokens
@@ -1001,6 +1119,8 @@ class LiteLLMModel(AbstractModel):
                 avg_tokens_per_msg = input_tokens / len(messages)
                 est_drop = min(int(excess / avg_tokens_per_msg) + 1, droppable)
                 del messages[1:1 + est_drop]
+                if is_bedrock:
+                    _clean_orphaned_tool_pairs(messages)
 
             # recalculate and fine-tune if still over
             messages_no_cc = [{k: v for k, v in m.items() if k != "cache_control"} for m in messages]
@@ -1011,6 +1131,8 @@ class LiteLLMModel(AbstractModel):
             )
             while input_tokens > self.model_max_input_tokens and len(messages) > 2:
                 messages.pop(1)
+                if is_bedrock:
+                    _clean_orphaned_tool_pairs(messages)
                 messages_no_cc = [{k: v for k, v in m.items() if k != "cache_control"} for m in messages]
                 input_tokens = litellm.utils.token_counter(
                     messages=messages_no_cc,
@@ -1069,10 +1191,15 @@ class LiteLLMModel(AbstractModel):
                 if region:
                     completion_kwargs["aws_region_name"] = region
 
-        if self.config.name.startswith("bedrock/") and self.model_max_output_tokens and "max_tokens" not in completion_kwargs:
-            completion_kwargs["max_tokens"] = self.model_max_output_tokens
+        if self.config.name.startswith("bedrock/"):
+            # Always clamp max_tokens for Bedrock (shared context pool)
+            effective_max = self._calculate_effective_max_tokens(input_tokens)
+            if "max_tokens" in completion_kwargs:
+                completion_kwargs["max_tokens"] = min(completion_kwargs["max_tokens"], effective_max)
+            else:
+                completion_kwargs["max_tokens"] = effective_max
 
-        if self.lm_provider == "anthropic":
+        if self.lm_provider == "anthropic" and not self.config.name.startswith("bedrock/"):
             completion_kwargs["max_tokens"] = self.model_max_output_tokens
         try:
             start_time = time.perf_counter()
@@ -1088,6 +1215,7 @@ class LiteLLMModel(AbstractModel):
                     api_version=self.config.api_version,
                     api_key=api_key,
                     fallbacks=self.config.fallbacks,
+                    timeout=300,  # 5 min timeout to prevent indefinite hangs on stale connections
                     **completion_kwargs,
                     **extra_args,
                     n=n,
@@ -1159,7 +1287,7 @@ class LiteLLMModel(AbstractModel):
                 "turn_statistics": turn_statistics,
             }
             if self.tools.use_function_calling:
-                output_dict["tool_calls"] = []
+                output_dict["tool_calls"] = self._parse_responses_api_tool_calls(response)
             outputs = [output_dict]
 
         else:
@@ -1226,11 +1354,23 @@ class LiteLLMModel(AbstractModel):
         outputs = []
         # not needed for openai, but oh well.
         for _ in range(n):
-            outputs.extend(self._single_query(messages))
+            outputs.extend(self._single_query(messages, temperature=temperature))
         return outputs
 
-    def query_for_summary(self, context: str, turns: Turns, extract_action_from_turns: bool = False, max_kept_action_length: int = -1, max_kept_reasoning_length: int = -1) -> SummaryMetadata:
-        user_prompt, actions = self._construct_user_prompt_for_summary(context, turns, extract_action_from_turns, max_kept_action_length, max_kept_reasoning_length)
+    def query_for_summary(
+        self,
+        context: str,
+        turns: Turns,
+        extract_action_from_turns: bool = False,
+        max_kept_action_length: int = -1,
+        max_kept_reasoning_length: int = -1,
+        *,
+        synthesize: bool = False,
+    ) -> SummaryMetadata:
+        user_prompt, actions = self._construct_user_prompt_for_summary(
+            context, turns, extract_action_from_turns, max_kept_action_length, max_kept_reasoning_length,
+            synthesize=synthesize,
+        )
         
         messages = [
             {"role": "system", "content": self.summary_system_prompt},
@@ -1269,8 +1409,13 @@ class LiteLLMModel(AbstractModel):
                 if region:
                     completion_kwargs["aws_region_name"] = region
 
-        if self.config.name.startswith("bedrock/") and self.model_max_output_tokens and "max_tokens" not in completion_kwargs:
-            completion_kwargs["max_tokens"] = self.model_max_output_tokens
+        if self.config.name.startswith("bedrock/"):
+            # Always clamp max_tokens for Bedrock (shared context pool)
+            effective_max = self._calculate_effective_max_tokens(input_tokens)
+            if "max_tokens" in completion_kwargs:
+                completion_kwargs["max_tokens"] = min(completion_kwargs["max_tokens"], effective_max)
+            else:
+                completion_kwargs["max_tokens"] = effective_max
 
         try:
             start_time = time.perf_counter()
@@ -1285,6 +1430,7 @@ class LiteLLMModel(AbstractModel):
                     top_p=self.config.top_p,
                     api_version=self.config.api_version,
                     api_key=api_key,
+                    timeout=300,  # 5 min timeout to prevent indefinite hangs on stale connections
                     **completion_kwargs,
                     **extra_args,
                 )
@@ -1298,11 +1444,31 @@ class LiteLLMModel(AbstractModel):
         if self._is_responses_api_model():
             summary = self._parse_responses_api_output(response)
         else:
-            summary = response.choices[0].message.content or ""
-        
+            message = response.choices[0].message
+            summary = message.content
+            # For reasoning models (e.g., MiniMax M2.1), content is in reasoning_content attribute
+            if not summary:
+                reasoning_content = getattr(message, 'reasoning_content', None)
+                if reasoning_content:
+                    summary = reasoning_content
+                    self.logger.debug(f"Using reasoning_content as summary (content was empty)")
+            if not summary:
+                # log response structure to help debug API compatibility issues
+                model_extra_keys = list(message.model_extra.keys()) if hasattr(message, 'model_extra') and message.model_extra else []
+                self.logger.warning(
+                    f"Summarization returned empty content. "
+                    f"message.content={message.content!r}, "
+                    f"has_reasoning_content={hasattr(message, 'reasoning_content')}, "
+                    f"model_extra_keys={model_extra_keys}"
+                )
+                # fail fast - empty summary would corrupt stats, bypass actions check, and poison context
+                msg = f"Summarization failed: Model {self.config.name} returned empty content. Check logs for response structure."
+                self.logger.error(msg)
+                raise FormatError(msg)
+
         try:
             if not self.config.is_local_model:
-                cost = litellm.cost_calculator.completion_cost(response)
+                cost = litellm.cost_calculator.completion_cost(response, model=self.config.name)
             else:
                 cost = 0
         except Exception as e:
@@ -1325,9 +1491,7 @@ class LiteLLMModel(AbstractModel):
 
         self.update_cached_context(history=current_history, content=summary, model_type="summary", action=None, thought=None)
 
-        raw_input_tokens = input_tokens - cached_input_tokens
-        if raw_input_tokens < 0:
-            raise RuntimeError(f"Raw input tokens ({raw_input_tokens}) is negative. This should not happen.")
+        raw_input_tokens = max(0, input_tokens - cached_input_tokens)
         
         internal_reasoning_content = None
         internal_reasoning_content_tokens = 0
@@ -1366,13 +1530,13 @@ class LiteLLMModel(AbstractModel):
 
         def retry_warning(retry_state: RetryCallState):
             exception_info = ""
-            if attempt.retry_state.outcome is not None and attempt.retry_state.outcome.exception() is not None:
-                exception = attempt.retry_state.outcome.exception()
-                exception_info = f" due to {exception.__class__.__name__}: {str(exception)}"
+            if retry_state.outcome is not None and retry_state.outcome.exception() is not None:
+                exc = retry_state.outcome.exception()
+                exception_info = f" due to {exc.__class__.__name__}: {str(exc)}"
 
             self.logger.warning(
-                f"Retrying LM query: attempt {attempt.retry_state.attempt_number} "
-                f"(slept for {attempt.retry_state.idle_for:.2f}s)"
+                f"Retrying LM query: attempt {retry_state.attempt_number} "
+                f"(slept for {retry_state.idle_for:.2f}s)"
                 f"{exception_info}"
             )
 
@@ -1421,9 +1585,13 @@ class LiteLLMModel(AbstractModel):
         for history_item in history:
             role = get_role(history_item)
             if role == "tool":
+                content = history_item["content"]
+                # Bedrock Converse API requires non-empty text content in every message block.
+                if self.config.name.startswith("bedrock/") and (not content or not content.strip()):
+                    content = "."
                 message = {
                     "role": role,
-                    "content": history_item["content"],
+                    "content": content,
                     # Only one tool call per observations
                     "tool_call_id": history_item["tool_call_ids"][0],  # type: ignore
                 }
@@ -1431,11 +1599,22 @@ class LiteLLMModel(AbstractModel):
                 for tool_call in tool_calls:
                     if "type" not in tool_call:
                         tool_call["type"] = "function"
-                message = {"role": role, "content": history_item["content"], "tool_calls": tool_calls}
+                content = history_item["content"]
+                # Bedrock Converse API requires non-empty text content in every message block.
+                # When assistant makes a tool call without explanation, use a placeholder.
+                if self.config.name.startswith("bedrock/") and (not content or not content.strip()):
+                    content = "."
+                message = {"role": role, "content": content, "tool_calls": tool_calls}
                 if thinking_blocks := history_item.get("thinking_blocks"):
                     message["thinking_blocks"] = thinking_blocks
             else:
-                message = {"role": role, "content": history_item["content"]}
+                content = history_item["content"]
+                # Bedrock Converse API requires non-empty text content in every message block.
+                if self.config.name.startswith("bedrock/") and (not content or not content.strip()):
+                    content = "."
+                message = {"role": role, "content": content}
+                if thinking_blocks := history_item.get("thinking_blocks"):
+                    message["thinking_blocks"] = thinking_blocks
             if "cache_control" in history_item:
                 message["cache_control"] = history_item["cache_control"]
             messages.append(message)
