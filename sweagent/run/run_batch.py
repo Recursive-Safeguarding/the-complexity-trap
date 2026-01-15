@@ -159,10 +159,6 @@ class RunBatch:
                 times the number of workers at the start of each instance. This is to avoid any
                 potential race conditions.
         """
-        if self._model_id in ["human", "human_thought"] and num_workers > 1:
-            msg = "Cannot run with human model in parallel"
-            raise ValueError(msg)
-
         self.logger = get_logger("swea-run", emoji="🏃")
         add_file_handler(
             output_dir / "run_batch.log",
@@ -171,6 +167,11 @@ class RunBatch:
         )
         self.instances = instances
         self.agent_config = agent_config
+
+        # Check after agent_config is set (needed for _model_id property)
+        if self._model_id in ["human", "human_thought"] and num_workers > 1:
+            msg = "Cannot run with human model in parallel"
+            raise ValueError(msg)
         self.output_dir = output_dir
         self._raise_exceptions = raise_exceptions
         self._chooks = CombinedRunHooks()
@@ -196,7 +197,9 @@ class RunBatch:
         load_environment_variables(config.env_var_path)
         config.set_default_output_dir()
         config.output_dir.mkdir(parents=True, exist_ok=True)
-        (config.output_dir / "run_batch.config.yaml").write_text(yaml.dump(config.model_dump_json(), indent=2))
+        (config.output_dir / "run_batch.config.yaml").write_text(
+            yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False, indent=2)
+        )
         logger = get_logger("run", emoji="🏃")
         logger.debug("Loading instances from %s", f"{config.instances!r}")
         instances = config.instances.get_instance_configs()
@@ -332,15 +335,16 @@ class RunBatch:
     def _run_instance(self, instance: BatchInstance) -> AgentRunResult:
         output_dir = Path(self.output_dir) / instance.problem_statement.id
         output_dir.mkdir(parents=True, exist_ok=True)
-        self.agent_config.name = f"{instance.problem_statement.id}"
-        agent = get_agent_from_config(self.agent_config)
+        agent_config = self.agent_config.model_copy(deep=True)
+        agent_config.name = f"{instance.problem_statement.id}"
+        agent = get_agent_from_config(agent_config)
         single_run_replay_config = RunSingleConfig(
-            agent=self.agent_config,
+            agent=agent_config,
             problem_statement=instance.problem_statement,
             env=instance.env,
         )
         (output_dir / f"{instance.problem_statement.id}.config.yaml").write_text(
-            yaml.dump(single_run_replay_config.model_dump_json(), indent=2)
+            yaml.safe_dump(single_run_replay_config.model_dump(mode="json"), sort_keys=False, indent=2)
         )
         agent.replay_config = single_run_replay_config  # type: ignore[attr-defined]
         agent.add_hook(SetStatusAgentHook(instance.problem_statement.id, self._progress_manager.update_instance_status))
@@ -370,6 +374,8 @@ class RunBatch:
         finally:
             env.close()
         save_predictions(self.output_dir, instance.problem_statement.id, result)
+        # Thread instance_id through to hooks (avoids race condition with shared hook state)
+        result.info["instance_id"] = instance.problem_statement.id
         self._chooks.on_instance_completed(result=result)
         return result
 

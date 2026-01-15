@@ -166,28 +166,85 @@ def test_summarize_with_partial_unprocessed_turns(extended_history):
 
 
 def test_extract_turns_invalid_format():
-    """Test that _extract_turns_from raises an error for invalid history formats."""
+    """Test that _extract_turns_from gracefully handles edge cases.
+
+    The function now skips invalid sequences instead of raising, to support
+    non-function-calling flows where observations may not follow the strict
+    (assistant, observation) pattern.
+    """
     processor = SummarizeEveryNTurns(n=2)
 
-    # Tool as first message
+    # Tool as first message - should skip, return empty turns
     invalid_history_1 = [
         {"role": "tool", "content": "Invalid start", "message_type": "observation"}
     ]
-    with pytest.raises(AssertionError) as exc1:
-        processor._extract_turns_from(invalid_history_1)
-    assert "unexpected history format" in str(exc1.value).lower()
-    assert "tool call cannot be the first message" in str(exc1.value).lower()
+    turns = processor._extract_turns_from(invalid_history_1)
+    assert turns == [], "Observation at index 0 should be skipped"
 
-    # Tool not preceded by assistant
+    # Tool not preceded by assistant - should skip that observation
     invalid_history_2 = [
         {"role": "system", "content": "System prompt", "message_type": "system"},
         {"role": "user", "content": "User message", "message_type": "user"},
         {"role": "tool", "content": "Invalid sequence", "message_type": "observation"}
     ]
-    with pytest.raises(AssertionError) as exc2:
-        processor._extract_turns_from(invalid_history_2)
-    assert "unexpected history format" in str(exc2.value).lower()
-    assert "preceded by an assistant message" in str(exc2.value).lower()
+    turns = processor._extract_turns_from(invalid_history_2)
+    assert turns == [], "Observation not preceded by assistant should be skipped"
+
+
+def test_extract_turns_with_user_role_observations():
+    """Test that _extract_turns_from handles non-function-calling mode.
+
+    In non-function-calling flows (e.g., Bedrock models), observations come
+    as role='user' with message_type='observation' instead of role='tool'.
+    The processor should extract turns from both formats.
+    """
+    processor = SummarizeEveryNTurns(n=2)
+
+    # History with role='user' observations (non-FC mode)
+    non_fc_history = [
+        {"role": "system", "content": "You are an AI assistant", "message_type": "system"},
+        {"role": "user", "content": "Hello", "message_type": "user"},
+        {"role": "assistant", "content": "I'll check something", "message_type": "thought", "action": "check"},
+        {"role": "user", "content": "Result of check", "message_type": "observation"},  # Non-FC observation
+        {"role": "assistant", "content": "I'll look up info", "message_type": "thought", "action": "lookup"},
+        {"role": "user", "content": "Information found", "message_type": "observation"},  # Non-FC observation
+    ]
+
+    turns = processor._extract_turns_from(non_fc_history)
+
+    # Should extract 2 turns, same as function-calling mode
+    assert len(turns) == 2
+    assert turns[0] == [non_fc_history[2], non_fc_history[3]]
+    assert turns[1] == [non_fc_history[4], non_fc_history[5]]
+
+
+def test_compact_turns_for_summary_with_user_role_observations():
+    """Test that _compact_turns_for_summary handles role='user' observations.
+
+    The compaction should truncate long observations regardless of whether
+    they come as role='tool' or role='user' with message_type='observation'.
+    """
+    processor = SummarizeEveryNTurns(n=2, max_observation_length_for_summary=50)
+
+    # Turns with role='user' observations (non-FC mode)
+    turns = [
+        [
+            {"role": "assistant", "content": "I'll check", "message_type": "thought"},
+            {"role": "user", "content": "A" * 100, "message_type": "observation"},  # Long observation
+        ],
+        [
+            {"role": "assistant", "content": "I'll look", "message_type": "thought"},
+            {"role": "tool", "content": "B" * 100, "message_type": "observation"},  # Long tool observation
+        ],
+    ]
+
+    compacted = processor._compact_turns_for_summary(turns)
+
+    # Both observations should be truncated
+    assert len(compacted[0][1]["content"]) < 100, "User observation should be truncated"
+    assert len(compacted[1][1]["content"]) < 100, "Tool observation should be truncated"
+    assert "..." in compacted[0][1]["content"], "User observation should have ellipsis"
+    assert "..." in compacted[1][1]["content"], "Tool observation should have ellipsis"
 
 
 def test_with_incrementally_added_turns(extended_history):
@@ -288,9 +345,15 @@ def test_summarize_with_api_limit_exceeded():
             # Not used in this test
             return {"message": "test"}
         
-        def query_for_summary(self, context, turns):
+        def query_for_summary(self, context, turns, extract_action_from_turns=False,
+                               max_kept_action_length=-1, max_kept_reasoning_length=-1,
+                               synthesize=False):
+            from sweagent.types import SummaryMetadata
             self.stats.api_calls += 1
-            return f"Mock summary of {len(turns)} turns"
+            return SummaryMetadata(
+                summary=f"Mock summary of {len(turns)} turns",
+                context=[{"role": "system", "content": context}],
+            )
     
     # Create a processor with n=2
     processor = SummarizeEveryNTurns(n=2)
@@ -318,23 +381,25 @@ def test_summarize_with_api_limit_exceeded():
     assert len(result1) == 3  # system, user, summary
     assert "Mock summary of 2 turns" in result1[2]["content"]
     assert mock_model.stats.api_calls == 1
-    
-    # Second call: should hit API limit but still return a summary placeholder
+
+    # second call: hits API limit, turns are preserved (not dropped)
     history2 = extended_history[:10]  # system + user + 4 turns total
     result2 = processor(history2)
-    assert len(result2) == 4  # system, user, first summary, second summary/placeholder
-    assert "Summary skipped due to API call limit" in result2[3]["content"]
-    assert mock_model.stats.api_calls == 1  # Should not increment
-    
-    # Third call: should still work (even though API limit was hit before)
-    # This tests that the counting logic wasn't broken by the API limit
+    # Should have: cache (sys, user, summary1) + unprocessed turns (2 turns = 4 items) = 7 items
+    assert len(result2) == 7, f"Expected 7 items but got {len(result2)}: turns preserved when API limit hit"
+    assert mock_model.stats.api_calls == 1  # Should not increment (summarization skipped)
+    # Verify the preserved turns are there
+    assert result2[3]["role"] == "assistant"  # Turn 3 assistant
+    assert result2[4]["role"] == "tool"  # Turn 3 tool
+
+    # third call: API limit still in effect, turns still preserved
     history3 = extended_history[:14]  # system + user + 6 turns total
     result3 = processor(history3)
-    # Should have 5 items: system, user, summary1, placeholder2, summary3/placeholder3
-    assert len(result3) == 5
-    assert "summary" in result3[4]["content"].lower()
-    
-    print("✓ API call limit handling works correctly")
+    # Should have: cache (3) + 4 unprocessed turns (8 items) = 11 items
+    assert len(result3) == 11, f"Expected 11 items but got {len(result3)}"
+    assert mock_model.stats.api_calls == 1  # Still no increment
+
+    print("✓ API call limit handling preserves turns correctly")
 
 
 def test_extract_turns_with_existing_summaries():
