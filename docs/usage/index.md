@@ -29,4 +29,12 @@ Just want to run it? See [getting started](../index.md) instead!
 
     [:octicons-arrow-right-24: Configuration](../config/config.md)
 
+-   :material-chart-bar:{ .lg .middle } __Query Tool__
+
+    ---
+
+    CLI tool for querying WandB experiment results.
+
+    [:octicons-arrow-right-24: Query Tool](../usage/query_tool.md)
+
 </div>
