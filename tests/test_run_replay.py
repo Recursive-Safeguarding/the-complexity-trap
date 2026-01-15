@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 import pytest
@@ -17,7 +18,21 @@ def rr_config(swe_agent_test_repo_traj, tmp_path, swe_agent_test_repo_clone):
     )
 
 
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["docker", "info"], capture_output=True, text=True, timeout=5
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
 def test_replay(rr_config):
+    if not _docker_available():
+        pytest.skip("Docker not available")
     rr = RunReplay.from_config(rr_config, _catch_errors=False, _require_zero_exit_code=True)
     rr.main()
 

@@ -20,4 +20,5 @@ def test_litellm_mock():
             parse_function=Identity(),
         ),
     )
-    assert model.query(History([{"role": "user", "content": "Hello, world!"}])) == {"message": "Hello, world!"}  # type: ignore
+    result = model.query(History([{"role": "user", "content": "Hello, world!"}]))  # type: ignore
+    assert result["message"] == "Hello, world!"

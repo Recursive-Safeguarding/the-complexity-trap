@@ -52,9 +52,13 @@ Available sweeps:
 
 ## Weave Tracing
 
-Enabled by default when `--wandb` is set. Requires in-process execution (default).
+Disabled by default (WandB already logs the same metrics). To enable:
 
-Disable with `--no-weave` or `--execution subprocess`.
+```bash
+python scripts/run_sweep.py --model deepseek-chat --strategy raw --weave --wandb
+```
+
+Requires in-process execution (default).
 
 ## Bedrock Notes
 

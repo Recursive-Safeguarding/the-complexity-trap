@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,16 @@ root_dir = _this_dir.parent
 package_dir = root_dir / "sweagent"
 sys.path.insert(0, str(root_dir))
 sys.path.insert(1, str(package_dir))
+
+# Ensure repo-local resources are used when running tests from an installed package.
+os.environ.setdefault("SWE_AGENT_CONFIG_DIR", str(root_dir / "config"))
+os.environ.setdefault("SWE_AGENT_TOOLS_DIR", str(root_dir / "tools"))
+os.environ.setdefault("SWE_AGENT_TRAJECTORY_DIR", str(root_dir / "trajectories"))
+
+# Ensure the venv entrypoints (e.g., sweagent) are discoverable in subprocess tests.
+venv_bin = root_dir / ".venv" / "bin"
+if venv_bin.exists():
+    os.environ["PATH"] = f"{venv_bin}:{os.environ.get('PATH', '')}"
 
 
 @pytest.fixture

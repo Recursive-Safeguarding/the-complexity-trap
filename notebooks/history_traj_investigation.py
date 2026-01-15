@@ -15,9 +15,20 @@
 
 # %%
 import os, json
+from pathlib import Path
 
 # %%
-os.chdir("/path/to/project/root") # TODO
+def _find_project_root() -> Path:
+    if "__file__" in globals():
+        return Path(__file__).resolve().parents[1]
+    cwd = Path.cwd().resolve()
+    for parent in [cwd, *cwd.parents]:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return cwd
+
+
+os.chdir(_find_project_root())
 os.getcwd()
 
 # %% [markdown]

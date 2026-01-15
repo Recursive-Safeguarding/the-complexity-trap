@@ -537,12 +537,16 @@ class DefaultAgent(AbstractAgent):
             )
         else:
             summary_model = get_model(config.summary_model, config.tools)
-            # Keep stats separate from main model for accurate cost breakdown.
-            # Lines 1304-1305 combine them in model_stats.
             summary_model.shared_stats = shared_stats
             get_logger("swea-agent", emoji="🤠").info(
                 f"Using specialist summarization model: {config.summary_model.name}"
             )
+
+        # Share instance stats between main and summary models for consistent accounting.
+        try:
+            summary_model.stats = shared_instance_stats
+        except Exception:
+            pass
 
         for processor in config.history_processors:
             if hasattr(processor, "set_model") and callable(getattr(processor, "set_model")):

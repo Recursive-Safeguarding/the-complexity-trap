@@ -55,7 +55,7 @@ Note that the optional dependency group `local-model` is intended for on-device 
 
 ```bash
 export VLLM_BUILD_WITH_CUDA=0
-export VLL
+# See vLLM docs for any additional CPU-only build flags if needed.
 ```
 
 and remove the platform exclusion markers in `pyproject.toml`.
@@ -89,7 +89,7 @@ sweagent run-batch \
     --instances.type swe_bench \
     --instances.subset verified \
     --instances.split test \
-    --num_workers  \
+    --num_workers 10 \
     --instances.slice :10 \
     --output_dir trajectories/<USERNAME>/<DIRECTORY_NAME>
 ```
@@ -119,20 +119,20 @@ In the data reported for our main experiments, we use the following configuratio
 To evaluate local models, we provide the [`start_vllm_server.sh`](scripts/start_vllm_server.sh) and [`orchestrate_runs.py`](scripts/orchestrate_runs.py).
 
 ## Experimental data
-Together with the agent scaffold we release experimental data of our main experiments together with notebooks for reproducing the main figures of shown in our work.
+Together with the agent scaffold we release experimental data of our main experiments together with notebooks for reproducing the main figures shown in our work.
 
 You can find the bundled archives containing our data in [our HuggingFace dataset repository](https://huggingface.co/datasets/JetBrains-Research/the-complexity-trap).
 
 To reproduce our figures please download the trajectory data bundled with our project. Extract the `sweagent` trajectories and move them into `trajectories/lindenbauer/main-experiments`. `auxiliary-data/eval_results-swe_agent.tar` contains the SWE-bench evaluation outcomes of our `sweagent` experiments. Extract these data if you want to reproduce our experiments.
 
-Regading OpenHands, our plotting code uses a cleaned version of the Openhands data that is available in `auxiliary-data`. However, we still release the full trajectories for transparency. 
+Regarding OpenHands, our plotting code uses a cleaned version of the OpenHands data that is available in `auxiliary-data`. However, we still release the full trajectories for transparency.
 
 The notebooks we release with this project require the extracted data to function properly.
 
 Additionally, we release data on our statistical significance tests in `auxiliary-data` for transparency.
 
 ## Generality probing
-In our work we report probing for generality with OpenHands. For this we forked the repository at commit fd3b4ac8e6db3103a3f8b488d44dd36e51e057be. We made minor modifications to their LLM-Summary implementation to allow experimentation with the same follow the official instructions [here](https://github.com/All-Hands-AI/OpenHands/blob/main/Development.md). Guidance on configuring an LLM and using an efficient context management strategy can be found [here](https://github.com/All-Hands-AI/OpenHands/tree/main/evaluation). We experiment with the context management implementations for Observation Masking and LLM-Summary found [here](https://github.com/All-Hands-AI/OpenHands/tree/main/openhands/memory/condenser/impl).
+In our work we report probing for generality with OpenHands. For this we forked the repository at commit fd3b4ac8e6db3103a3f8b488d44dd36e51e057be. We made minor modifications to their LLM-Summary implementation to allow experimentation with the same settings; follow the official instructions [here](https://github.com/All-Hands-AI/OpenHands/blob/main/Development.md). Guidance on configuring an LLM and using an efficient context management strategy can be found [here](https://github.com/All-Hands-AI/OpenHands/tree/main/evaluation). We experiment with the context management implementations for Observation Masking and LLM-Summary found [here](https://github.com/All-Hands-AI/OpenHands/tree/main/openhands/memory/condenser/impl).
 
 ## 🪪 License <a name="license"></a>
 MIT. Check `LICENSE`.
