@@ -1,6 +1,8 @@
 AGENTS.md
 CLAUDE.md
 keys.yaml
+.scratch/
+.notes/
 .swe-agent-human-history
 .vscode/**
 cov.xml
@@ -223,3 +225,4 @@ auxiliary-data/experimental-results
 # Generated configs
 config/.generated/
 background-documents/
+slides/
