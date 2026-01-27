@@ -343,6 +343,39 @@ class AbstractModel(ABC):
         # keeps the method usable even when a model instance is constructed
         # without calling __init__ (e.g., in unit tests via object.__new__).
         return litellm.utils.token_counter(messages=common_prefix)
+
+    def count_tokens(self, messages: History | list[dict[str, Any]]) -> int:
+        """Estimate input tokens for a history/messages list.
+
+        This mirrors the token counting path used in `_single_query` by removing
+        cache-control and thinking metadata before counting.
+        """
+        messages_no_cache_control = copy.deepcopy(list(messages))
+        for message in messages_no_cache_control:
+            if "cache_control" in message:
+                del message["cache_control"]
+            if "thinking_blocks" in message:
+                del message["thinking_blocks"]
+
+        model_for_counting = (
+            self.custom_tokenizer["identifier"]
+            if hasattr(self, "custom_tokenizer")
+            and self.custom_tokenizer
+            and "identifier" in self.custom_tokenizer
+            else getattr(self.config, "name", None)
+        )
+
+        if model_for_counting is None:
+            return litellm.utils.token_counter(
+                messages=messages_no_cache_control,
+                custom_tokenizer=getattr(self, "custom_tokenizer", None),
+            )
+
+        return litellm.utils.token_counter(
+            messages=messages_no_cache_control,
+            model=model_for_counting,
+            custom_tokenizer=getattr(self, "custom_tokenizer", None),
+        )
     
     def _construct_user_prompt_for_summary(
         self,
@@ -1123,7 +1156,10 @@ class LiteLLMModel(AbstractModel):
                     _clean_orphaned_tool_pairs(messages)
 
             # recalculate and fine-tune if still over
-            messages_no_cc = [{k: v for k, v in m.items() if k != "cache_control"} for m in messages]
+            messages_no_cc = [
+                {k: v for k, v in m.items() if k not in ("cache_control", "thinking_blocks")}
+                for m in messages
+            ]
             input_tokens = litellm.utils.token_counter(
                 messages=messages_no_cc,
                 model=self.custom_tokenizer.get('identifier', self.config.name) if self.custom_tokenizer else self.config.name,
@@ -1133,7 +1169,10 @@ class LiteLLMModel(AbstractModel):
                 messages.pop(1)
                 if is_bedrock:
                     _clean_orphaned_tool_pairs(messages)
-                messages_no_cc = [{k: v for k, v in m.items() if k != "cache_control"} for m in messages]
+                messages_no_cc = [
+                    {k: v for k, v in m.items() if k not in ("cache_control", "thinking_blocks")}
+                    for m in messages
+                ]
                 input_tokens = litellm.utils.token_counter(
                     messages=messages_no_cc,
                     model=self.custom_tokenizer.get('identifier', self.config.name) if self.custom_tokenizer else self.config.name,

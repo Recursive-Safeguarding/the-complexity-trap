@@ -552,6 +552,8 @@ class DefaultAgent(AbstractAgent):
             if hasattr(processor, "set_model") and callable(getattr(processor, "set_model")):
                 summary_model.set_summary_system_prompt(config.templates.summary_system_template)
                 processor.set_model(summary_model)
+            if hasattr(processor, "set_context_model") and callable(getattr(processor, "set_context_model")):
+                processor.set_context_model(model)
 
         return cls(
             templates=config.templates,

@@ -27,8 +27,8 @@ def test_last_n_observations(test_history: History):
     processor = LastNObservations(n=3)
     new_history = processor(test_history)
     total_observations = len([entry for entry in test_history if entry["message_type"] == "observation"])
-    # extra -1 because instance template is kept
-    expected_elided_observations = total_observations - 3 - 1
+    anchor_observations = 1  # keep the first observation (instance template)
+    expected_elided_observations = total_observations - 3 - anchor_observations
     assert count_elided_observations(new_history) == expected_elided_observations
 
 
@@ -544,4 +544,109 @@ def test_keep_last_m_turns_incremental_processing(extended_history):
     assert len(result4) == 6  # system + user + summary1 + summary2 + 1 remaining turn (2 entries)
     # Should have two summary messages
     summary_count = len([item for item in result4 if item.get("tags") == [{"type": "summary"}]])
-    assert summary_count == 2 
+    assert summary_count == 2
+
+
+class DummyContextModel:
+    def __init__(self, *, context_window: int, tokens: int):
+        self.model_context_window = context_window
+        self._tokens = tokens
+
+    def count_tokens(self, history: History) -> int:  # pragma: no cover - trivial
+        return self._tokens
+
+    def set_tokens(self, tokens: int) -> None:
+        self._tokens = tokens
+
+
+def _has_summary(history: History) -> bool:
+    for entry in history:
+        for tag in entry.get("tags", []):
+            if isinstance(tag, dict) and tag.get("type") == "summary":
+                return True
+    return False
+
+
+def test_limit_aware_last_n_observations_skips_below_threshold(extended_history: History):
+    processor = LastNObservations(
+        n=3,
+        enable_limit_aware_trigger=True,
+        limit_trigger_fraction=0.9,
+    )
+    processor.set_context_model(DummyContextModel(context_window=1000, tokens=100))
+
+    new_history = processor(extended_history)
+
+    assert new_history == extended_history
+    assert count_elided_observations(new_history) == 0
+
+
+def test_limit_aware_last_n_observations_triggers_near_limit(extended_history: History):
+    processor = LastNObservations(
+        n=3,
+        enable_limit_aware_trigger=True,
+        limit_trigger_fraction=0.9,
+    )
+    processor.set_context_model(DummyContextModel(context_window=1000, tokens=950))
+
+    new_history = processor(extended_history)
+
+    total_observations = len([entry for entry in extended_history if entry["message_type"] == "observation"])
+    anchor_observations = 1  # keep the first observation (instance template)
+    expected_elided_observations = total_observations - 3 - anchor_observations
+    assert count_elided_observations(new_history) == expected_elided_observations
+
+
+def test_limit_aware_summary_skips_below_threshold(extended_history: History):
+    processor = SummarizeEveryNTurns(
+        n=2,
+        keep_last_m_turns=0,
+        omit_turns=True,
+        enable_limit_aware_trigger=True,
+        limit_trigger_fraction=0.9,
+    )
+    processor.set_context_model(DummyContextModel(context_window=1000, tokens=100))
+
+    new_history = processor(extended_history)
+
+    assert new_history == extended_history
+    assert not _has_summary(new_history)
+
+
+def test_limit_aware_summary_triggers_near_limit(extended_history: History):
+    processor = SummarizeEveryNTurns(
+        n=2,
+        keep_last_m_turns=0,
+        omit_turns=True,
+        enable_limit_aware_trigger=True,
+        limit_trigger_fraction=0.9,
+    )
+    processor.set_context_model(DummyContextModel(context_window=1000, tokens=950))
+
+    new_history = processor(extended_history)
+
+    assert new_history != extended_history
+    assert _has_summary(new_history)
+
+
+def test_limit_aware_summary_preserves_compacted_view_when_below_threshold(extended_history: History):
+    context_model = DummyContextModel(context_window=1000, tokens=950)
+    processor = SummarizeEveryNTurns(
+        n=2,
+        keep_last_m_turns=0,
+        omit_turns=True,
+        enable_limit_aware_trigger=True,
+        limit_trigger_fraction=0.9,
+    )
+    processor.set_context_model(context_model)
+
+    # First call compacts (near limit)
+    compacted = processor(extended_history[:6])
+    assert _has_summary(compacted)
+    assert len(compacted) == 3
+
+    # Subsequent call should keep the compacted view even if we're now below the threshold
+    context_model.set_tokens(100)
+    result = processor(extended_history[:8])
+    assert _has_summary(result)
+    assert len(result) < len(extended_history[:8])
