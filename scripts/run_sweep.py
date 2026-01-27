@@ -130,6 +130,12 @@ def build_tags(args) -> list[str]:
             tags.append(f"sum_n:{args.hp_sum_n}")
         if args.hp_sum_keep_m is not None:
             tags.append(f"keep_m:{args.hp_sum_keep_m}")
+    if args.hp_limit_aware:
+        tags.append("limit-aware")
+        if args.hp_limit_fraction is not None:
+            tags.append(f"limit_frac:{args.hp_limit_fraction}")
+        if args.hp_limit_min_tokens is not None:
+            tags.append(f"limit_min_tokens:{args.hp_limit_min_tokens}")
 
     return tags
 
@@ -142,6 +148,9 @@ def build_run_name(args) -> str:
     - Single underscore (_) separates items within strategy config group
     """
     parts = []
+
+    def _fmt_float_for_name(val: float) -> str:
+        return str(val).replace(".", "p")
 
     # Group 1: Model
     parts.append(_safe_name(args.model))
@@ -156,21 +165,28 @@ def build_run_name(args) -> str:
     # Add hyperparameters to strategy config
     # For masking-only strategies (no summarization)
     if args.strategy in ("observation_masking", "dedup_obs_masking") and args.hp_obs_n is not None:
-        strategy_parts.append(f"n={args.hp_obs_n}")
+        strategy_parts.append(f"n-{args.hp_obs_n}")
     # For summary-only strategies (no masking)
     elif args.strategy in ("llm_summary", "llm_summary_synthesis", "llm_summary_compact"):
         if args.hp_sum_n is not None:
-            strategy_parts.append(f"n={args.hp_sum_n}")
+            strategy_parts.append(f"n-{args.hp_sum_n}")
         if args.hp_sum_keep_m is not None:
-            strategy_parts.append(f"k={args.hp_sum_keep_m}")
+            strategy_parts.append(f"k-{args.hp_sum_keep_m}")
     # For combined strategies (summary + masking)
     elif args.strategy in ("hybrid", "llm_summary_obs_masking", "llm_summary_synthesis_obs_masking"):
         if args.hp_obs_n is not None:
-            strategy_parts.append(f"o={args.hp_obs_n}")
+            strategy_parts.append(f"o-{args.hp_obs_n}")
         if args.hp_sum_n is not None:
-            strategy_parts.append(f"s={args.hp_sum_n}")
+            strategy_parts.append(f"s-{args.hp_sum_n}")
         if args.hp_sum_keep_m is not None:
-            strategy_parts.append(f"k={args.hp_sum_keep_m}")
+            strategy_parts.append(f"k-{args.hp_sum_keep_m}")
+
+    if args.hp_limit_aware:
+        strategy_parts.append("la")
+        if args.hp_limit_fraction is not None:
+            strategy_parts.append(f"lf-{_fmt_float_for_name(args.hp_limit_fraction)}")
+        if args.hp_limit_min_tokens is not None:
+            strategy_parts.append(f"lt-{args.hp_limit_min_tokens}")
 
     parts.append("_".join(strategy_parts))
 
@@ -346,6 +362,24 @@ def parse_args():
         default=None,
         help="SummarizeEveryNTurns: Skip LLM summary, just mark omitted (default: false)"
     )
+    hp_group.add_argument(
+        "--hp-limit-aware",
+        type=str2bool,
+        default=None,
+        help="Only compact near the context limit (default: false)"
+    )
+    hp_group.add_argument(
+        "--hp-limit-fraction",
+        type=float,
+        default=None,
+        help="Trigger at this fraction of the context window (default: 0.9)"
+    )
+    hp_group.add_argument(
+        "--hp-limit-min-tokens",
+        type=int,
+        default=None,
+        help="Trigger at this token count (overrides fraction; default: 0)"
+    )
 
     return parser.parse_args()
 
@@ -355,6 +389,12 @@ def get_relevant_hparams(strategy: str, args) -> dict:
     if strategy in MASKING_STRATEGIES:
         if args.hp_obs_n is not None:
             hparams["hp_obs_n"] = args.hp_obs_n
+        if args.hp_limit_aware is not None:
+            hparams["hp_limit_aware"] = args.hp_limit_aware
+        if args.hp_limit_fraction is not None:
+            hparams["hp_limit_fraction"] = args.hp_limit_fraction
+        if args.hp_limit_min_tokens is not None:
+            hparams["hp_limit_min_tokens"] = args.hp_limit_min_tokens
     if strategy in SUMMARIZER_STRATEGIES:
         if args.hp_sum_n is not None:
             hparams["hp_sum_n"] = args.hp_sum_n
@@ -370,6 +410,12 @@ def get_relevant_hparams(strategy: str, args) -> dict:
             hparams["hp_sum_max_reasoning_length"] = args.hp_sum_max_reasoning_length
         if args.hp_sum_omit_turns is not None:
             hparams["hp_sum_omit_turns"] = args.hp_sum_omit_turns
+        if args.hp_limit_aware is not None:
+            hparams["hp_limit_aware"] = args.hp_limit_aware
+        if args.hp_limit_fraction is not None:
+            hparams["hp_limit_fraction"] = args.hp_limit_fraction
+        if args.hp_limit_min_tokens is not None:
+            hparams["hp_limit_min_tokens"] = args.hp_limit_min_tokens
 
     return hparams
 
@@ -404,12 +450,22 @@ def generate_custom_config(base_config_path: str, args, output_path: Path, model
         modified = True
 
     if "history_processors" in config.get("agent", {}):
+        limit_aware_explicit_false = args.hp_limit_aware is False
         for processor in config["agent"]["history_processors"]:
             proc_type = processor.get("type")
 
             if proc_type == "last_n_observations":
                 if args.hp_obs_n is not None:
                     processor["n"] = args.hp_obs_n
+                    modified = True
+                if args.hp_limit_aware is not None:
+                    processor["enable_limit_aware_trigger"] = args.hp_limit_aware
+                    modified = True
+                if args.hp_limit_fraction is not None and not limit_aware_explicit_false:
+                    processor["limit_trigger_fraction"] = args.hp_limit_fraction
+                    modified = True
+                if args.hp_limit_min_tokens is not None and not limit_aware_explicit_false:
+                    processor["limit_trigger_min_tokens"] = args.hp_limit_min_tokens
                     modified = True
 
             elif proc_type == "summarize_every_n_turns":
@@ -433,6 +489,15 @@ def generate_custom_config(base_config_path: str, args, output_path: Path, model
                     modified = True
                 if args.hp_sum_omit_turns is not None:
                     processor["omit_turns"] = args.hp_sum_omit_turns
+                    modified = True
+                if args.hp_limit_aware is not None:
+                    processor["enable_limit_aware_trigger"] = args.hp_limit_aware
+                    modified = True
+                if args.hp_limit_fraction is not None and not limit_aware_explicit_false:
+                    processor["limit_trigger_fraction"] = args.hp_limit_fraction
+                    modified = True
+                if args.hp_limit_min_tokens is not None and not limit_aware_explicit_false:
+                    processor["limit_trigger_min_tokens"] = args.hp_limit_min_tokens
                     modified = True
 
     if not modified:
