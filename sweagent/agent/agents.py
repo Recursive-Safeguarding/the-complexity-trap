@@ -592,15 +592,17 @@ class DefaultAgent(AbstractAgent):
     def messages(self) -> list[dict[str, Any]]:
         """Return the history of the agent for this attempt since the last reset, processed through all history processors."""
         filtered_history = [entry for entry in self.history if entry["agent"] == self.name]
-        
-        # Cache the processed messages within the same step to avoid multiple 
-        # history processor calls that can trigger redundant LLM summarization
-        if not hasattr(self, '_messages_cache'):
+
+        # Cache within a step, but invalidate automatically when history grows
+        # (e.g., hooks call `messages` between action and observation).
+        cache_len = getattr(self, "_messages_cache_len", -1)
+        if (not hasattr(self, "_messages_cache")) or cache_len != len(filtered_history):
             messages = filtered_history
             for processor in self.history_processors:
                 messages = processor(messages)
             self._messages_cache = messages
-        
+            self._messages_cache_len = len(filtered_history)
+
         return self._messages_cache
 
     # Methods
@@ -762,6 +764,8 @@ class DefaultAgent(AbstractAgent):
         """Adds a step (command that was run and output) to the model history"""
         if hasattr(self, '_messages_cache'):
             del self._messages_cache
+        if hasattr(self, "_messages_cache_len"):
+            del self._messages_cache_len
 
         self._append_history(
             {

@@ -650,3 +650,47 @@ def test_limit_aware_summary_preserves_compacted_view_when_below_threshold(exten
     result = processor(extended_history[:8])
     assert _has_summary(result)
     assert len(result) < len(extended_history[:8])
+
+
+def test_messages_cache_invalidates_on_history_growth():
+    from sweagent.agent.agents import DefaultAgent
+
+    calls = 0
+
+    class CountingProcessor:
+        def __call__(self, history: History) -> History:
+            nonlocal calls
+            calls += 1
+            return history
+
+    agent = object.__new__(DefaultAgent)
+    agent.name = "agent"
+    agent.history_processors = [CountingProcessor()]
+    agent.history = [
+        {
+            "agent": "agent",
+            "role": "system",
+            "content": "s",
+            "message_type": "system_prompt",
+        }
+    ]
+
+    _ = agent.messages
+    assert calls == 1
+
+    # Grow history without manually clearing cache; messages should recompute.
+    agent.history.append(
+        {
+            "agent": "agent",
+            "role": "user",
+            "content": "u",
+            "message_type": "observation",
+        }
+    )
+
+    _ = agent.messages
+    assert calls == 2
+
+    # No history change -> cache should hold.
+    _ = agent.messages
+    assert calls == 2

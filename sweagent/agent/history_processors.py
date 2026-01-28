@@ -209,10 +209,17 @@ class LastNObservations(BaseModel):
         new_history = []
         omit_content_idxs = self._get_omit_indices(history)
         for idx, entry in enumerate(history):
-            tags = entry.get("tags", [])
-
-            # Hacky workaround. I set the tags to be a dict because there was some internal LiteLLM issue otherwise.
-            tags = set([tags[0]['type']]) if (len(tags) > 0 and isinstance(tags[0], dict) and tags[0].get("type") == "summary") else set(tags)
+            # Normalize tags to a comparable set of strings. Some processors
+            # store dict tags like {"type": "summary"} which are unhashable.
+            raw_tags = entry.get("tags", [])
+            tags: set[str] = set()
+            for tag in raw_tags:
+                if isinstance(tag, dict):
+                    tag_type = tag.get("type")
+                    if isinstance(tag_type, str):
+                        tags.add(tag_type)
+                elif isinstance(tag, str):
+                    tags.add(tag)
 
             if ((idx not in omit_content_idxs) or (tags & self.always_keep_output_for_tags)) and not (
                 tags & self.always_remove_output_for_tags

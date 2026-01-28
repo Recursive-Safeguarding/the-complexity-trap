@@ -347,10 +347,24 @@ class AbstractModel(ABC):
     def count_tokens(self, messages: History | list[dict[str, Any]]) -> int:
         """Estimate input tokens for a history/messages list.
 
-        This mirrors the token counting path used in `_single_query` by removing
-        cache-control and thinking metadata before counting.
+        This mirrors the token counting path used in `_single_query` by:
+        1) converting History -> messages when possible, and
+        2) removing cache-control and thinking metadata before counting.
         """
-        messages_no_cache_control = copy.deepcopy(list(messages))
+        messages_list = list(messages)
+
+        # When called with History items, use the model's canonical conversion
+        # so counting matches what will actually be sent to the provider.
+        try:
+            if hasattr(self, "_history_to_messages") and messages_list and any(
+                ("message_type" in m) or ("tool_call_ids" in m) for m in messages_list
+            ):
+                messages_list = self._history_to_messages(messages_list)  # type: ignore[arg-type]
+        except Exception:
+            # Fall back to the provided list if conversion fails.
+            pass
+
+        messages_no_cache_control = copy.deepcopy(messages_list)
         for message in messages_no_cache_control:
             if "cache_control" in message:
                 del message["cache_control"]
@@ -358,11 +372,9 @@ class AbstractModel(ABC):
                 del message["thinking_blocks"]
 
         model_for_counting = (
-            self.custom_tokenizer["identifier"]
-            if hasattr(self, "custom_tokenizer")
-            and self.custom_tokenizer
-            and "identifier" in self.custom_tokenizer
-            else getattr(self.config, "name", None)
+            getattr(self, "custom_tokenizer", {}).get("identifier")
+            if getattr(self, "custom_tokenizer", None)
+            else getattr(getattr(self, "config", None), "name", None)
         )
 
         if model_for_counting is None:
@@ -1194,7 +1206,10 @@ class LiteLLMModel(AbstractModel):
                     cached_input_tokens = 0
 
             # sync messages_no_cache_control
-            messages_no_cache_control = [{k: v for k, v in m.items() if k != "cache_control"} for m in messages]
+            messages_no_cache_control = [
+                {k: v for k, v in m.items() if k not in ("cache_control", "thinking_blocks")}
+                for m in messages
+            ]
 
             self.logger.warning(
                 f"Rolling truncation: {original_tokens:,} → {input_tokens:,} tokens, "
