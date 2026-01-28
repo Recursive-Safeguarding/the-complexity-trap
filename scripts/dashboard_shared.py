@@ -18,7 +18,6 @@ import pandas as pd
 # NOTE: Paper reports solve_rate (bugs actually fixed)
 # solve_rate = n_resolved / n_instances (directly comparable to paper)
 #
-# Each entry includes: solve_rate, avg_cost, confidence intervals (ci), and relative change vs raw (delta)
 PAPER_BASELINES = {
     "qwen3-32b": {
         "raw": {"solve_rate": 0.170, "avg_cost": 1.12, "rate_ci": 0.033, "cost_ci": 0.18},
@@ -103,7 +102,6 @@ EXIT_COLORS = {
 
 
 def _unwrap_wandb_value(val):
-    """Unwrap WandB summary dicts like {'last': value} to plain values."""
     if isinstance(val, dict):
         if "last" in val:
             return val["last"]
@@ -113,7 +111,6 @@ def _unwrap_wandb_value(val):
 
 
 def _safe_float(val, default=np.nan):
-    """Convert value to float, returning default if not finite."""
     if val is None:
         return default
     if isinstance(val, float) and not np.isfinite(val):
@@ -125,8 +122,19 @@ def _safe_float(val, default=np.nan):
         return default
 
 
+def _coalesce_str(val, default: str) -> str:
+    if val is None:
+        return default
+    try:
+        if pd.isna(val):
+            return default
+    except (ValueError, TypeError):
+        pass
+    s = str(val)
+    return s if s else default
+
+
 def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) -> pd.DataFrame:
-    """Fetch all runs from WandB as DataFrame."""
     import wandb
 
     api = wandb.Api()
@@ -143,18 +151,17 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
         summary = r.summary._json_dict if r.summary else {}
 
         def _get(key, default=None):
-            """Get value from summary, unwrapping WandB dicts."""
             val = summary.get(key, default)
             return _unwrap_wandb_value(val)
 
-        # wandb returns eval_complete in various formats
+        # wandb returns eval_complete in various formats (including numpy scalars)
         _eval_val = _get("eval_complete", False)
-        if isinstance(_eval_val, bool):
-            eval_complete = _eval_val
-        elif isinstance(_eval_val, (int, float)):
+        if isinstance(_eval_val, (bool, np.bool_)):
+            eval_complete = bool(_eval_val)
+        elif isinstance(_eval_val, (int, float, np.integer, np.floating)):
             eval_complete = bool(_eval_val)
         elif isinstance(_eval_val, str):
-            eval_complete = _eval_val.lower() in ("true", "1", "yes")
+            eval_complete = _eval_val.strip().lower() in ("true", "1", "yes")
         else:
             eval_complete = False
 
@@ -231,10 +238,10 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
             "state": r.state,
             "created_at": r.created_at,
 
-            "model": config.get("model", "unknown"),
-            "strategy": config.get("strategy", "unknown"),
-            "summarizer": config.get("summarizer_model", "same"),
-            "instances_subset": config.get("instances_subset", "verified"),
+            "model": _coalesce_str(config.get("model"), "unknown"),
+            "strategy": _coalesce_str(config.get("strategy"), "unknown"),
+            "summarizer": _coalesce_str(config.get("summarizer_model"), "same"),
+            "instances_subset": _coalesce_str(config.get("instances_subset"), "verified"),
             "eval_complete": eval_complete,
 
             "n_instances": n_instances,
@@ -269,7 +276,6 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
 
 
 def dedupe_latest_runs(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only the newest run per run_name."""
     if df.empty or "run_name" not in df.columns:
         return df
 
@@ -291,7 +297,6 @@ def dedupe_latest_runs(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_project_config() -> tuple[str | None, str | None]:
-    """Get project and entity from environment variables."""
     project = os.environ.get("DASHBOARD_PROJECT") or os.environ.get("WANDB_PROJECT")
     entity = os.environ.get("DASHBOARD_ENTITY") or os.environ.get("WANDB_ENTITY")
     return project, entity
