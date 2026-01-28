@@ -20,9 +20,11 @@ DATASET_MAP_DOCKER = {
 }
 
 # Dataset mappings for sb-cli cloud evaluation
+# NOTE: verified-mini intentionally omitted to prevent accidental full-benchmark runs.
+# sb-cli doesn't have a mini subset, so mapping to verified would run 500 instances
+# instead of 50, causing unexpected costs. Use Docker evaluation for verified-mini.
 DATASET_MAP_SBCLI = {
     "verified": "swe-bench_verified",
-    "verified-mini": "swe-bench_verified",  # sb-cli doesn't have mini, uses full verified
     "lite": "swe-bench_lite",
 }
 
@@ -225,7 +227,19 @@ def run_docker_evaluation(
     if n_instances is None:
         try:
             data = json.loads(preds_path.read_text())
-            n_instances = len(data) if isinstance(data, list) else 50
+            if isinstance(data, list):
+                n_instances = len(data)
+            elif isinstance(data, dict):
+                # Prefer common wrapper keys to avoid severe under-counting.
+                for key in ("predictions", "preds", "instances", "data"):
+                    wrapped = data.get(key)
+                    if isinstance(wrapped, (list, dict)):
+                        n_instances = len(wrapped)
+                        break
+                else:
+                    n_instances = len(data)
+            else:
+                n_instances = 50
         except (json.JSONDecodeError, FileNotFoundError, IsADirectoryError):
             n_instances = 50  # fallback estimate
 
@@ -261,16 +275,54 @@ def run_docker_evaluation(
             stderr = result.stderr if hasattr(result, 'stderr') and result.stderr else ""
             return False, f"exit {result.returncode}: {stderr[:500]}", None
 
-        # find the report file in logs/run_evaluation/<run_id>/
+        reports: list[Path] = []
+
+        # 1) swebench harness typically writes under logs/run_evaluation/<run_id>/
         logs_dir = Path("logs/run_evaluation") / run_id
-        reports = list(logs_dir.glob(f"{run_id}*.json")) if logs_dir.exists() else []
-        if not reports:
-            reports = list(logs_dir.glob("report.json")) if logs_dir.exists() else []
+        if logs_dir.exists():
+            reports.extend(logs_dir.glob(f"{run_id}*.json"))
+            reports.extend(logs_dir.glob("report.json"))
+
+        # 2) some harness versions write to CWD as <run_dir>.<run_id>.json
+        # where <run_dir> is typically preds_path.parent.name.
+        candidate_stems = {preds_path.stem, preds_path.parent.name}
+        for stem in candidate_stems:
+            cwd_report = Path(f"{stem}.{run_id}.json")
+            if cwd_report.exists():
+                reports.append(cwd_report)
+                continue
+            reports.extend(Path(".").glob(f"{stem}.*{run_id}*.json"))
 
         if not reports:
-            return False, "no report.json found after evaluation", None
+            return False, "no evaluation report found after run_evaluation", None
 
-        latest_report = max(reports, key=lambda p: p.stat().st_mtime)
+        # Prefer explicit aggregate reports over per-instance JSON artifacts.
+        preferred_reports = [p for p in reports if p.name == "report.json"]
+        if not preferred_reports:
+            preferred_reports = [p for p in reports if "report" in p.stem.lower()]
+        report_pool = preferred_reports or reports
+
+        # Heuristically prefer aggregate reports that contain evaluation totals.
+        aggregate_keys = {
+            "resolved_ids",
+            "resolved",
+            "submitted_ids",
+            "submitted",
+            "applied",
+            "unresolved",
+        }
+        aggregate_reports: list[Path] = []
+        for candidate in report_pool:
+            try:
+                payload = json.loads(candidate.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and aggregate_keys.intersection(payload):
+                aggregate_reports.append(candidate)
+        if aggregate_reports:
+            report_pool = aggregate_reports
+
+        latest_report = max(report_pool, key=lambda p: p.stat().st_mtime)
 
         # copy to output_dir if specified
         if output_dir:

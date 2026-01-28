@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -19,6 +20,46 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import wandb
+
+
+def _coerce_int(value, default: int = 0) -> int:
+    """Best-effort int parsing that tolerates None/NaN/strings."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return default
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return default
+    return default
+
+
+def _coerce_float(value, default: float = 0.0) -> float:
+    """Best-effort float parsing that tolerates None/NaN/strings."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return default
+        return float(value)
+    if isinstance(value, str):
+        try:
+            parsed = float(value)
+            return parsed if math.isfinite(parsed) else default
+        except ValueError:
+            return default
+    return default
 
 
 def find_eval_results(project_dir: Path) -> dict[str, Path]:
@@ -67,6 +108,14 @@ def parse_eval_results(results_path: Path) -> dict:
     with open(results_path) as f:
         data = json.load(f)
 
+    # handle list-wrapped eval results (e.g., [{instance_id: ..., resolved: true}, ...])
+    if isinstance(data, list):
+        n_resolved = sum(
+            1 for item in data
+            if isinstance(item, dict) and item.get("resolved")
+        )
+        return {"n_resolved": n_resolved, "n_evaluated": len(data), "n_instances": 0}
+
     if not isinstance(data, dict):
         return {"n_resolved": 0, "n_evaluated": 0, "n_instances": 0}
 
@@ -74,34 +123,59 @@ def parse_eval_results(results_path: Path) -> dict:
         return {
             "n_resolved": data.get("resolved_instances", 0),
             "n_evaluated": data.get("completed_instances", data.get("submitted_instances", 0)),
-            "n_instances": data.get("submitted_instances", 0),
+            # Do not treat submitted/evaluated instances as the total slice size.
+            "n_instances": 0,
         }
+
+    # Unwrap common container keys if present.
+    for key in ("predictions", "preds", "instances", "data"):
+        wrapped = data.get(key)
+        if isinstance(wrapped, dict):
+            data = wrapped
+            break
+
+    # Count only per-instance entries; ignore top-level metadata keys.
+    instance_ids = [
+        k
+        for k, v in data.items()
+        if isinstance(v, dict) and ("resolved" in v or "result" in v or "status" in v)
+    ]
 
     if "resolved" in data or "resolved_ids" in data:
         resolved = data.get("resolved", data.get("resolved_ids", []))
-        if isinstance(resolved, bool):
-            # Single instance result
-            resolved = [k for k, v in data.items() if isinstance(v, dict) and v.get("resolved")]
+        if isinstance(resolved, list):
+            # If we have explicit per-instance entries, intersect with them.
+            # Otherwise, fall back to trusting the resolved list length.
+            if instance_ids:
+                n_resolved = len([rid for rid in resolved if rid in instance_ids])
+            else:
+                n_resolved = len(resolved)
+        elif isinstance(resolved, bool):
+            # Single-instance or legacy format; fall back to per-instance flags.
+            n_resolved = len([k for k in instance_ids if data.get(k, {}).get("resolved")])
+        else:
+            n_resolved = 1 if resolved else 0
     else:
-        resolved = [k for k, v in data.items() if isinstance(v, dict) and v.get("resolved")]
+        n_resolved = len([k for k in instance_ids if data.get(k, {}).get("resolved")])
 
-    n_resolved = len(resolved) if isinstance(resolved, list) else (1 if resolved else 0)
-    n_evaluated = len([k for k in data.keys() if not k.startswith("_") and k not in ("resolved", "resolved_ids")])
+    n_evaluated = len(instance_ids)
 
     return {
         "n_resolved": n_resolved,
         "n_evaluated": n_evaluated,
-        "n_instances": n_evaluated,  # fallback if not available
+        # Prefer backfilling from the WandB run summary when possible.
+        "n_instances": 0,
     }
 
 
 def update_wandb_run(run, metrics: dict, dry_run: bool = False):
-    n_resolved = metrics["n_resolved"]
-    n_evaluated = metrics["n_evaluated"]
-    n_instances = metrics.get("n_instances", 0)
+    n_resolved = _coerce_int(metrics.get("n_resolved", 0), default=0)
+    n_evaluated = _coerce_int(metrics.get("n_evaluated", 0), default=0)
+    n_instances = _coerce_int(metrics.get("n_instances", 0), default=0)
     if not n_instances:
-        n_instances_raw = run.summary.get("instances", n_evaluated)
-        n_instances = int(n_instances_raw) if isinstance(n_instances_raw, (int, float)) else n_evaluated
+        # Prefer explicit totals, fall back to legacy "instances" key, then to n_evaluated.
+        n_instances_raw = run.summary.get("n_instances") or run.summary.get("instances", n_evaluated)
+        n_instances = _coerce_int(n_instances_raw, default=n_evaluated)
 
     eval_pass_rate = n_resolved / n_evaluated if n_evaluated else 0
     eval_coverage = n_evaluated / n_instances if n_instances else 0
@@ -125,12 +199,32 @@ def update_wandb_run(run, metrics: dict, dry_run: bool = False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Update WandB runs with evaluation results")
-    parser.add_argument("--project", default=os.getenv("WANDB_PROJECT", "the-complexity-trap"))
-    parser.add_argument("--entity", default=os.getenv("WANDB_ENTITY", "ox"))
-    parser.add_argument("--project-dir", default=".", help="Project directory to search for eval results")
-    parser.add_argument("--dry-run", action="store_true", help="Preview without updating")
-    parser.add_argument("--force", action="store_true", help="Override existing solve_rate values")
+    parser = argparse.ArgumentParser(
+        description="Backfill WandB runs with retroactive evaluation results."
+    )
+    parser.add_argument(
+        "--project",
+        default=os.getenv("WANDB_PROJECT", "the-complexity-trap"),
+        help="WandB project name (use 'the-complexity-trap').",
+    )
+    parser.add_argument(
+        "--entity",
+        default=os.getenv("WANDB_ENTITY", "ox"),
+        help="WandB entity/team.",
+    )
+    parser.add_argument(
+        "--project-dir",
+        default=".",
+        help="Project directory to search for eval results.",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Preview updates without writing to WandB."
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing solve_rate values.",
+    )
     args = parser.parse_args()
 
     project_dir = Path(args.project_dir)
@@ -170,7 +264,7 @@ def main():
             print(f"⚠ No WandB run found for: {run_id}")
             continue
 
-        existing_rate = wandb_run.summary.get("solve_rate", 0)
+        existing_rate = _coerce_float(wandb_run.summary.get("solve_rate", 0.0), default=0.0)
         if existing_rate > 0 and not args.force and not args.dry_run:
             print(f"✓ Already evaluated: {run_id} (solve_rate={existing_rate:.1%})")
             continue
