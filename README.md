@@ -4,6 +4,8 @@
 
 *Fork of JetBrains Research's "The Complexity Trap" with multi-model evaluation infrastructure*
 
+*Original README: [README_upstream.md](README_upstream.md)*
+
 ---
 
 ## What's New
