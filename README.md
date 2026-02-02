@@ -156,12 +156,13 @@ DASHBOARD_PROJECT=the-complexity-trap python scripts/dashboard_tui.py
 
 ---
 
-## Upstream Documentation
+## Documentation
 
 For original SWE-agent documentation and paper methodology, see:
 - [README_upstream.md](README_upstream.md) - Original paper README
 - [SWE-agent-README.md](SWE-agent-README.md) - SWE-agent framework docs
 - [SWE-agent official docs](https://swe-agent.com/latest/)
+- Marius Hobbhahn's [SWE bench verified mini split](https://huggingface.co/datasets/MariusHobbhahn/swe-bench-verified-mini)
 
 ---
 
