@@ -47,7 +47,7 @@ STRATEGY_CONFIGS = {
     "llm_summary_obs_masking": "config/default_no_demo_checkpoint_same_model_openhands_N=21_M=10_masking_M=10.yaml",
     "llm_summary_synthesis": "config/default_no_demo_checkpoint_synthesis_N=21_M=10.yaml",
     "llm_summary_synthesis_obs_masking": "config/default_no_demo_checkpoint_synthesis_N=21_M=10_masking_M=10.yaml",
-    # Backward compatibility alias
+    "on_demand": "config/default_no_demo_on_demand_M=10.yaml",
     "hybrid": "config/default_no_demo_checkpoint_same_model_openhands_N=21_M=10_masking_M=10.yaml",
 }
 
@@ -60,7 +60,8 @@ STRATEGY_ABBREV = {
     "llm_summary_obs_masking": "sum_obs",
     "llm_summary_synthesis": "syn",
     "llm_summary_synthesis_obs_masking": "syn_obs",
-    "hybrid": "hyb",  # Backward compatibility
+    "on_demand": "od",
+    "hybrid": "hyb",
 }
 
 # Strategies that use a summarizer model (for tag building and config)
@@ -70,7 +71,8 @@ SUMMARIZER_STRATEGIES = {
     "llm_summary_obs_masking",
     "llm_summary_synthesis",
     "llm_summary_synthesis_obs_masking",
-    "hybrid",  # Backward compatibility
+    "on_demand",
+    "hybrid",
 }
 
 # Strategies that use observation masking (for hyperparam handling)
