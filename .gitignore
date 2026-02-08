@@ -226,3 +226,7 @@ auxiliary-data/experimental-results
 config/.generated/
 background-documents/
 slides/
+
+.ruff_cache
+.run
+.vscode
