@@ -101,12 +101,12 @@ python scripts/query.py failures
 
 | Preset | Provider | Description | Context |
 |--------|----------|-------------|---------|
-| `glm-4.7` | Z.AI | GLM-4.7 (agentic coding) | 131K |
+| `glm-4.7` | Z.AI | GLM-4.7 (agentic coding) | 200K |
 | `glm-4.6` | Z.AI | GLM-4.6 (355B MoE) | 200K |
 | `kimi-k2` | Moonshot | Kimi K2 (1T MoE, 32B active) | 262K |
 | `minimax-m2.1` | MiniMax | M2.1 (enhanced multilingual) | 205K |
 | `deepseek-chat` | DeepSeek | DeepSeek V3 | 128K |
-| `bedrock-qwen3-coder-480b` | AWS Bedrock | Qwen3 Coder 480B | 131K |
+| `bedrock-qwen3-coder-480b` | AWS Bedrock | Qwen3 Coder 480B | 262K |
 | `bedrock-qwen3-32b` | AWS Bedrock | Qwen3 32B | 32K |
 | `gpt-4o` | OpenAI | GPT-4o | 128K |
 | `claude-sonnet-4.5` | Anthropic | Claude Sonnet 4.5 | 200K |

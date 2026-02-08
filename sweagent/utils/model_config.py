@@ -49,14 +49,14 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
         name="gpt-5.2",
         api_key_var="OPENAI_API_KEY",
         description="OpenAI GPT-5.2 (frontier)",
-        max_input_tokens=400000,
+        max_input_tokens=272000,
         max_output_tokens=128000,
     ),
     "gpt-5.2-pro": ModelPreset(
         name="gpt-5.2-pro",
         api_key_var="OPENAI_API_KEY",
         description="OpenAI GPT-5.2 Pro",
-        max_input_tokens=400000,
+        max_input_tokens=272000,
         max_output_tokens=128000,
     ),
     "gpt-5.2-chat-latest": ModelPreset(
@@ -126,7 +126,7 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
 
     # DeepSeek
     "deepseek-chat": ModelPreset("deepseek/deepseek-chat", api_base="https://api.deepseek.com/v1", api_key_var="DEEPSEEK_API_KEY", description="DeepSeek V3", max_input_tokens=128000, max_output_tokens=8192),
-    "deepseek-reasoner": ModelPreset("deepseek/deepseek-reasoner", api_base="https://api.deepseek.com/v1", api_key_var="DEEPSEEK_API_KEY", description="DeepSeek R1", supports_function_calling=False, max_input_tokens=128000, max_output_tokens=8192),
+    "deepseek-reasoner": ModelPreset("deepseek/deepseek-reasoner", api_base="https://api.deepseek.com/v1", api_key_var="DEEPSEEK_API_KEY", description="DeepSeek R1", supports_function_calling=False, max_input_tokens=128000, max_output_tokens=65536),
 
     # Anthropic
     "claude-sonnet-4.5": ModelPreset("claude-sonnet-4-5-20250929", api_key_var="ANTHROPIC_API_KEY", description="Claude Sonnet 4.5"),
@@ -135,12 +135,12 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
 
     # GLM (Z.AI) - bypass cost limits, User-Agent for quota routing
     "glm-4.6": ModelPreset("anthropic/glm-4.6", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.6 (355B MoE, 32B active)", max_input_tokens=200000, max_output_tokens=131072, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
-    "glm-4.7": ModelPreset("anthropic/glm-4.7", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.7 (agentic coding, thinking modes)", max_input_tokens=131072, max_output_tokens=131072, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
+    "glm-4.7": ModelPreset("anthropic/glm-4.7", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.7 (agentic coding, thinking modes)", max_input_tokens=200000, max_output_tokens=131072, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
     "glm-4.5-air": ModelPreset("anthropic/glm-4.5-air", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.5 Air", max_input_tokens=128000, max_output_tokens=16384, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
 
     # MiniMax - bypass cost limits
-    "minimax-m2": ModelPreset("openai/MiniMax-M2", api_base="https://api.minimax.io/v1", api_key_var="MINIMAX_API_KEY", description="MiniMax M2 (230B MoE, 10B active)", max_input_tokens=204800, max_output_tokens=196608, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
-    "minimax-m2.1": ModelPreset("anthropic/minimax-m2.1", api_base="https://api.minimax.io/anthropic", api_key_var="MINIMAX_API_KEY", description="MiniMax M2.1 (enhanced multilingual, faster)", max_input_tokens=204800, max_output_tokens=196608, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
+    "minimax-m2": ModelPreset("openai/MiniMax-M2", api_base="https://api.minimax.io/v1", api_key_var="MINIMAX_API_KEY", description="MiniMax M2 (230B MoE, 10B active)", max_input_tokens=204800, max_output_tokens=131072, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
+    "minimax-m2.1": ModelPreset("anthropic/minimax-m2.1", api_base="https://api.minimax.io/anthropic", api_key_var="MINIMAX_API_KEY", description="MiniMax M2.1 (enhanced multilingual, faster)", max_input_tokens=204800, max_output_tokens=131072, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
 
     # Kimi / Moonshot - bypass cost limits
     "kimi-k2": ModelPreset("openai/kimi-for-coding", api_base="https://api.kimi.com/coding/v1", api_key_var="MOONSHOT_API_KEY", description="Kimi K2 (1T MoE, 32B active)", max_input_tokens=262144, max_output_tokens=32768, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
@@ -159,7 +159,7 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
 
     # AWS Bedrock (Converse API)
     "bedrock-qwen3-32b": ModelPreset("bedrock/converse/qwen.qwen3-32b-v1:0", description="Qwen3 32B", max_input_tokens=24576, max_output_tokens=8192, context_window=32768),
-    "bedrock-qwen3-coder-480b": ModelPreset("bedrock/converse/qwen.qwen3-coder-480b-a35b-v1:0", description="Qwen3 Coder 480B", max_input_tokens=65536, max_output_tokens=65536, context_window=131072),
+    "bedrock-qwen3-coder-480b": ModelPreset("bedrock/converse/qwen.qwen3-coder-480b-a35b-v1:0", description="Qwen3 Coder 480B", max_input_tokens=196608, max_output_tokens=65536, context_window=262144),
 
     "bedrock-claude-haiku-4.5": ModelPreset("bedrock/converse/anthropic.claude-haiku-4-5-20251001-v1:0", description="Claude Haiku 4.5", max_input_tokens=200000, max_output_tokens=64000),
     "bedrock-claude-haiku-4.5-us": ModelPreset("bedrock/converse/us.anthropic.claude-haiku-4-5-20251001-v1:0", description="Claude Haiku 4.5 (US)", max_input_tokens=200000, max_output_tokens=64000),
@@ -219,18 +219,18 @@ CUSTOM_MODEL_PRICING: dict[str, dict] = {
         "litellm_provider": "openai",
         "mode": "chat",
     },
-    # GLM-4.7 (same pricing as 4.6)
+    # GLM-4.7 (same pricing as 4.6, 200K context window)
     "anthropic/glm-4.7": {
         "input_cost_per_token": 0.50 / 1_000_000,
         "output_cost_per_token": 2.20 / 1_000_000,
-        "max_tokens": 131072,
+        "max_tokens": 200000,
         "litellm_provider": "anthropic",
         "mode": "chat",
     },
     "glm-4.7": {
         "input_cost_per_token": 0.50 / 1_000_000,
         "output_cost_per_token": 2.20 / 1_000_000,
-        "max_tokens": 131072,
+        "max_tokens": 200000,
         "litellm_provider": "anthropic",
         "mode": "chat",
     },
