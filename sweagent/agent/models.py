@@ -5,6 +5,7 @@ import json
 import os
 import random
 import shlex
+import signal
 import threading
 import time
 import uuid
@@ -62,6 +63,38 @@ except Exception:
 _THREADS_THAT_USED_API_KEYS = []
 """Keeps track of thread orders so that we can choose the same API key for the same thread."""
 _THREADS_THAT_USED_API_KEYS_LOCK = Lock()
+
+HARD_TIMEOUT_SECONDS = 300  # 5 min OS-level kill switch for API calls
+
+
+class APITimeoutError(Exception):
+    """Hard timeout: provider didn't respond within the SIGALRM deadline."""
+
+
+def _call_with_hard_timeout(func, timeout_seconds=HARD_TIMEOUT_SECONDS):
+    """Wrap func() with a SIGALRM kill switch (Unix main-thread only).
+
+    LiteLLM's timeout= doesn't reliably propagate to httpx for custom
+    api_base endpoints (Kimi, ZhipuAI, MiniMax). This is the fallback.
+    """
+    if not hasattr(signal, "SIGALRM"):
+        # Windows or non-Unix: fall back to no hard timeout
+        return func()
+
+    if threading.current_thread() is not threading.main_thread():
+        # signal.alarm only works in main thread; skip for threaded callers
+        return func()
+
+    def _handler(signum, frame):
+        raise APITimeoutError(f"API call exceeded hard timeout of {timeout_seconds}s")
+
+    old_handler = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(timeout_seconds)
+    try:
+        return func()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 
 class RetryConfig(PydanticBaseModel):
@@ -1259,20 +1292,24 @@ class LiteLLMModel(AbstractModel):
             start_time = time.perf_counter()
 
             if self._is_responses_api_model():
-                response = self._call_responses_api(messages, completion_kwargs, extra_args, api_key)
+                response = _call_with_hard_timeout(
+                    lambda: self._call_responses_api(messages, completion_kwargs, extra_args, api_key)
+                )
             else:
-                response: litellm.types.utils.ModelResponse = litellm.completion(  # type: ignore
-                    model=self._litellm_call_model,
-                    messages=messages,
-                    temperature=self.config.temperature if temperature is None else temperature,
-                    top_p=self.config.top_p,
-                    api_version=self.config.api_version,
-                    api_key=api_key,
-                    fallbacks=self.config.fallbacks,
-                    timeout=300,  # 5 min timeout to prevent indefinite hangs on stale connections
-                    **completion_kwargs,
-                    **extra_args,
-                    n=n,
+                response: litellm.types.utils.ModelResponse = _call_with_hard_timeout(  # type: ignore
+                    lambda: litellm.completion(
+                        model=self._litellm_call_model,
+                        messages=messages,
+                        temperature=self.config.temperature if temperature is None else temperature,
+                        top_p=self.config.top_p,
+                        api_version=self.config.api_version,
+                        api_key=api_key,
+                        fallbacks=self.config.fallbacks,
+                        timeout=300,
+                        **completion_kwargs,
+                        **extra_args,
+                        n=n,
+                    )
                 )
 
             end_time = time.perf_counter()
@@ -1475,18 +1512,22 @@ class LiteLLMModel(AbstractModel):
             start_time = time.perf_counter()
 
             if self._is_responses_api_model():
-                response = self._call_responses_api(messages, completion_kwargs, extra_args, api_key)
+                response = _call_with_hard_timeout(
+                    lambda: self._call_responses_api(messages, completion_kwargs, extra_args, api_key)
+                )
             else:
-                response: litellm.types.utils.ModelResponse = litellm.completion(
-                    model=self._litellm_call_model,
-                    messages=messages,
-                    temperature=self.config.temperature,
-                    top_p=self.config.top_p,
-                    api_version=self.config.api_version,
-                    api_key=api_key,
-                    timeout=300,  # 5 min timeout to prevent indefinite hangs on stale connections
-                    **completion_kwargs,
-                    **extra_args,
+                response: litellm.types.utils.ModelResponse = _call_with_hard_timeout(
+                    lambda: litellm.completion(
+                        model=self._litellm_call_model,
+                        messages=messages,
+                        temperature=self.config.temperature,
+                        top_p=self.config.top_p,
+                        api_version=self.config.api_version,
+                        api_key=api_key,
+                        timeout=300,
+                        **completion_kwargs,
+                        **extra_args,
+                    )
                 )
 
             end_time = time.perf_counter()
@@ -1614,6 +1655,8 @@ class LiteLLMModel(AbstractModel):
                     litellm.exceptions.AuthenticationError,
                     ContentPolicyViolationError,
                     ModelConfigurationError,
+                    APITimeoutError,
+                    litellm.exceptions.Timeout,
                 )
             ),
             before_sleep=retry_warning,
