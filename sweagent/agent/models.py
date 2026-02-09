@@ -8,11 +8,11 @@ import shlex
 import signal
 import threading
 import time
-import uuid
+
 from abc import ABC, abstractmethod
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Any, Literal, Dict
+from typing import Annotated, Any, Literal
 try:
     from transformers import AutoTokenizer
 except ImportError:
@@ -65,6 +65,9 @@ _THREADS_THAT_USED_API_KEYS = []
 _THREADS_THAT_USED_API_KEYS_LOCK = Lock()
 
 HARD_TIMEOUT_SECONDS = 300  # 5 min OS-level kill switch for API calls
+MIN_RESPONSES_API_OUTPUT_TOKENS = 16
+MIN_OUTPUT_TOKEN_BUFFER = 1024
+CONTEXT_WINDOW_BUFFER_TOKENS = 100
 
 
 class APITimeoutError(Exception):
@@ -645,10 +648,7 @@ class HumanModel(AbstractModel):
                 action = input("... ")
                 if action.rstrip() == "end_multiline_command":
                     return self._query(history, action_prompt)
-                if action.rstrip() == "end_multiline_command":
-                    break
                 buffer.append(action)
-            action = "\n".join(buffer)
         else:
             # Input has escaped things like \n, so we need to unescape it
             action = action.encode("utf8").decode("unicode_escape")
@@ -897,14 +897,18 @@ class LiteLLMModel(AbstractModel):
                 return f"openai/responses/{base_model}"
         return model_name
 
+    @property
+    def _tokenizer_model_id(self) -> str:
+        if self.custom_tokenizer and 'identifier' in self.custom_tokenizer:
+            return self.custom_tokenizer['identifier']
+        return self.config.name
+
     def _is_responses_api_model(self) -> bool:
-        """Check if the model uses OpenAI Responses API (gpt-5 series)."""
         return "openai/responses/" in self._litellm_call_model
 
     def _calculate_effective_max_tokens(self, input_tokens: int) -> int:
-        """Clamp max_tokens to context window."""
-        buffer = 100
-        min_output = 1024
+        buffer = CONTEXT_WINDOW_BUFFER_TOKENS
+        min_output = MIN_OUTPUT_TOKEN_BUFFER
 
         if self.model_context_window is None:
             return self.model_max_output_tokens if self.model_max_output_tokens is not None else min_output
@@ -936,6 +940,29 @@ class LiteLLMModel(AbstractModel):
             )
 
         return effective
+
+    def _prepare_bedrock_kwargs(self, completion_kwargs: dict, api_key: str | None, input_tokens: int) -> None:
+        """Mutates completion_kwargs in place."""
+        has_bedrock_bearer_token = bool(os.getenv("AWS_BEARER_TOKEN_BEDROCK") or api_key)
+        if self.config.name.startswith("bedrock/") and has_bedrock_bearer_token:
+            has_explicit_env_creds = bool(os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"))
+            has_explicit_kw_creds = bool(
+                completion_kwargs.get("aws_access_key_id") and completion_kwargs.get("aws_secret_access_key")
+            )
+            if not has_explicit_env_creds and not has_explicit_kw_creds:
+                completion_kwargs["aws_access_key_id"] = "DUMMY"
+                completion_kwargs["aws_secret_access_key"] = "DUMMY"
+            if "aws_region_name" not in completion_kwargs:
+                region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+                if region:
+                    completion_kwargs["aws_region_name"] = region
+
+        if self.config.name.startswith("bedrock/"):
+            effective_max = self._calculate_effective_max_tokens(input_tokens)
+            if "max_tokens" in completion_kwargs:
+                completion_kwargs["max_tokens"] = min(completion_kwargs["max_tokens"], effective_max)
+            else:
+                completion_kwargs["max_tokens"] = effective_max
 
     @staticmethod
     def _transform_tools_for_responses_api(tools: list[dict]) -> list[dict]:
@@ -984,9 +1011,9 @@ class LiteLLMModel(AbstractModel):
         if "max_tokens" in responses_kwargs:
             max_output_tokens = responses_kwargs.pop("max_tokens")
         else:
-            max_output_tokens = self.model_max_output_tokens or 16
+            max_output_tokens = self.model_max_output_tokens or MIN_RESPONSES_API_OUTPUT_TOKENS
 
-        max_output_tokens = max(16, max_output_tokens)
+        max_output_tokens = max(MIN_RESPONSES_API_OUTPUT_TOKENS, max_output_tokens)
         responses_model = self._litellm_call_model.replace("openai/responses/", "")
 
         # GPT-5 models don't support temperature/top_p parameters
@@ -1156,7 +1183,7 @@ class LiteLLMModel(AbstractModel):
             if "thinking_blocks" in message:
                 del message["thinking_blocks"]
         input_tokens: int = litellm.utils.token_counter(messages=messages_no_cache_control,
-                                                        model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
+                                                        model=self._tokenizer_model_id,
                                                         custom_tokenizer=self.custom_tokenizer)
 
         cached_input_tokens = 0
@@ -1168,11 +1195,7 @@ class LiteLLMModel(AbstractModel):
                 cached_input_tokens = 0
 
         if self.model_max_input_tokens is None:
-            msg = (
-                f"No max input tokens found for model {self.config.name!r}. "
-                "If you are using a local model, you can set `max_input_token` in the model config to override this."
-            )
-            # self.logger.warning(msg)  # Commented out for now
+            pass
         elif input_tokens > self.model_max_input_tokens > 0:
             # Rolling truncation: drop oldest messages (keep system prompt) until under limit
             original_count = len(messages)
@@ -1202,12 +1225,12 @@ class LiteLLMModel(AbstractModel):
 
             # recalculate and fine-tune if still over
             messages_no_cc = [
-                {k: v for k, v in m.items() if k not in ("cache_control", "thinking_blocks")}
+                {k: v for k, v in m.items() if k not in ("cache_control", "thinking_blocks", "reasoning_content")}
                 for m in messages
             ]
             input_tokens = litellm.utils.token_counter(
                 messages=messages_no_cc,
-                model=self.custom_tokenizer.get('identifier', self.config.name) if self.custom_tokenizer else self.config.name,
+                model=self._tokenizer_model_id,
                 custom_tokenizer=self.custom_tokenizer
             )
             while input_tokens > self.model_max_input_tokens and len(messages) > 2:
@@ -1215,12 +1238,12 @@ class LiteLLMModel(AbstractModel):
                 if is_bedrock:
                     _clean_orphaned_tool_pairs(messages)
                 messages_no_cc = [
-                    {k: v for k, v in m.items() if k not in ("cache_control", "thinking_blocks")}
+                    {k: v for k, v in m.items() if k not in ("cache_control", "thinking_blocks", "reasoning_content")}
                     for m in messages
                 ]
                 input_tokens = litellm.utils.token_counter(
                     messages=messages_no_cc,
-                    model=self.custom_tokenizer.get('identifier', self.config.name) if self.custom_tokenizer else self.config.name,
+                    model=self._tokenizer_model_id,
                     custom_tokenizer=self.custom_tokenizer
                 )
 
@@ -1240,7 +1263,7 @@ class LiteLLMModel(AbstractModel):
 
             # sync messages_no_cache_control
             messages_no_cache_control = [
-                {k: v for k, v in m.items() if k not in ("cache_control", "thinking_blocks")}
+                {k: v for k, v in m.items() if k not in ("cache_control", "thinking_blocks", "reasoning_content")}
                 for m in messages
             ]
 
@@ -1259,32 +1282,9 @@ class LiteLLMModel(AbstractModel):
             extra_args["tools"] = tools_to_use
         if self.config.is_local_model and self.config.use_reasoning:
             extra_args["chat_template_kwargs"] = {"enable_thinking": True}
-        # We need to always set max_tokens for anthropic models
         completion_kwargs = copy.deepcopy(self.config.completion_kwargs)
         api_key = self.config.choose_api_key()
-
-        # Bedrock: pass dummy creds to satisfy boto3 resolution when using bearer token
-        has_bedrock_bearer_token = bool(os.getenv("AWS_BEARER_TOKEN_BEDROCK") or api_key)
-        if self.config.name.startswith("bedrock/") and has_bedrock_bearer_token:
-            has_explicit_env_creds = bool(os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"))
-            has_explicit_kw_creds = bool(
-                completion_kwargs.get("aws_access_key_id") and completion_kwargs.get("aws_secret_access_key")
-            )
-            if not has_explicit_env_creds and not has_explicit_kw_creds:
-                completion_kwargs["aws_access_key_id"] = "DUMMY"
-                completion_kwargs["aws_secret_access_key"] = "DUMMY"
-            if "aws_region_name" not in completion_kwargs:
-                region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
-                if region:
-                    completion_kwargs["aws_region_name"] = region
-
-        if self.config.name.startswith("bedrock/"):
-            # Always clamp max_tokens for Bedrock (shared context pool)
-            effective_max = self._calculate_effective_max_tokens(input_tokens)
-            if "max_tokens" in completion_kwargs:
-                completion_kwargs["max_tokens"] = min(completion_kwargs["max_tokens"], effective_max)
-            else:
-                completion_kwargs["max_tokens"] = effective_max
+        self._prepare_bedrock_kwargs(completion_kwargs, api_key, input_tokens)
 
         if self.lm_provider == "anthropic" and not self.config.name.startswith("bedrock/"):
             completion_kwargs["max_tokens"] = self.model_max_output_tokens
@@ -1357,7 +1357,7 @@ class LiteLLMModel(AbstractModel):
 
             output_tokens = litellm.utils.token_counter(
                 text=output,
-                model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
+                model=self._tokenizer_model_id,
                 custom_tokenizer=self.custom_tokenizer
             )
 
@@ -1389,7 +1389,7 @@ class LiteLLMModel(AbstractModel):
             for i in range(n_choices):
                 output = choices[i].message.content or ""
                 output_tokens += litellm.utils.token_counter(messages=[choices[i].message],
-                                                            model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
+                                                            model=self._tokenizer_model_id,
                                                             custom_tokenizer=self.custom_tokenizer)
                 output_dict = {"message": output}
 
@@ -1404,7 +1404,7 @@ class LiteLLMModel(AbstractModel):
                     ):
                     internal_reasoning_content = choices[i].model_extra['message'].model_extra['reasoning_content']
                     internal_reasoning_content_tokens = litellm.utils.token_counter(text=internal_reasoning_content,
-                                                                                    model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
+                                                                                    model=self._tokenizer_model_id,
                                                                                     custom_tokenizer=self.custom_tokenizer)
 
                 turn_statistics = TurnStatistics(
@@ -1432,6 +1432,8 @@ class LiteLLMModel(AbstractModel):
                     and response.choices[i].message.thinking_blocks  # type: ignore
                 ):
                     output_dict["thinking_blocks"] = response.choices[i].message.thinking_blocks  # type: ignore
+                if internal_reasoning_content:
+                    output_dict["reasoning_content"] = internal_reasoning_content
                 outputs.append(output_dict)
 
         self._update_stats(input_tokens=input_tokens, output_tokens=output_tokens, cost=cost, cached_input_tokens=cached_input_tokens)
@@ -1470,7 +1472,7 @@ class LiteLLMModel(AbstractModel):
 
         input_tokens: int = litellm.utils.token_counter(
             messages=messages, 
-            model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
+            model=self._tokenizer_model_id,
             custom_tokenizer=self.custom_tokenizer
         )
 
@@ -1484,29 +1486,7 @@ class LiteLLMModel(AbstractModel):
 
         completion_kwargs = copy.deepcopy(self.config.completion_kwargs)
         api_key = self.config.choose_api_key()
-
-        # Bedrock: pass dummy creds to satisfy boto3 resolution when using bearer token
-        has_bedrock_bearer_token = bool(os.getenv("AWS_BEARER_TOKEN_BEDROCK") or api_key)
-        if self.config.name.startswith("bedrock/") and has_bedrock_bearer_token:
-            has_explicit_env_creds = bool(os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY"))
-            has_explicit_kw_creds = bool(
-                completion_kwargs.get("aws_access_key_id") and completion_kwargs.get("aws_secret_access_key")
-            )
-            if not has_explicit_env_creds and not has_explicit_kw_creds:
-                completion_kwargs["aws_access_key_id"] = "DUMMY"
-                completion_kwargs["aws_secret_access_key"] = "DUMMY"
-            if "aws_region_name" not in completion_kwargs:
-                region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
-                if region:
-                    completion_kwargs["aws_region_name"] = region
-
-        if self.config.name.startswith("bedrock/"):
-            # Always clamp max_tokens for Bedrock (shared context pool)
-            effective_max = self._calculate_effective_max_tokens(input_tokens)
-            if "max_tokens" in completion_kwargs:
-                completion_kwargs["max_tokens"] = min(completion_kwargs["max_tokens"], effective_max)
-            else:
-                completion_kwargs["max_tokens"] = effective_max
+        self._prepare_bedrock_kwargs(completion_kwargs, api_key, input_tokens)
 
         try:
             start_time = time.perf_counter()
@@ -1572,7 +1552,7 @@ class LiteLLMModel(AbstractModel):
 
         output_tokens: int = litellm.utils.token_counter(
             text=summary, 
-            model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
+            model=self._tokenizer_model_id,
             custom_tokenizer=self.custom_tokenizer
         )
         
@@ -1600,7 +1580,7 @@ class LiteLLMModel(AbstractModel):
                 ):
                 internal_reasoning_content = response.choices[0].model_extra['message'].model_extra['reasoning_content']
                 internal_reasoning_content_tokens = litellm.utils.token_counter(text=internal_reasoning_content,
-                                                                                model=self.custom_tokenizer['identifier'] if self.custom_tokenizer and 'identifier' in self.custom_tokenizer else self.config.name,
+                                                                                model=self._tokenizer_model_id,
                                                                                 custom_tokenizer=self.custom_tokenizer)
 
         summary_metadata = SummaryMetadata(
@@ -1667,6 +1647,17 @@ class LiteLLMModel(AbstractModel):
         if n is None or n == 1:
             return result[0]
         return result
+
+    def _bedrock_ensure_content(self, content: str | None) -> str:
+        """Ensure message content is non-empty.
+
+        Several providers (Bedrock, Kimi) reject empty content in assistant
+        messages. Using "." universally is safe and avoids provider-specific checks.
+        """
+        if not content or not content.strip():
+            return "."
+        return content
+
     def _history_to_messages(
         self,
         history: History,
@@ -1682,10 +1673,7 @@ class LiteLLMModel(AbstractModel):
         for history_item in history:
             role = get_role(history_item)
             if role == "tool":
-                content = history_item["content"]
-                # Bedrock Converse API requires non-empty text content in every message block.
-                if self.config.name.startswith("bedrock/") and (not content or not content.strip()):
-                    content = "."
+                content = self._bedrock_ensure_content(history_item["content"])
                 message = {
                     "role": role,
                     "content": content,
@@ -1696,22 +1684,19 @@ class LiteLLMModel(AbstractModel):
                 for tool_call in tool_calls:
                     if "type" not in tool_call:
                         tool_call["type"] = "function"
-                content = history_item["content"]
-                # Bedrock Converse API requires non-empty text content in every message block.
-                # When assistant makes a tool call without explanation, use a placeholder.
-                if self.config.name.startswith("bedrock/") and (not content or not content.strip()):
-                    content = "."
+                content = self._bedrock_ensure_content(history_item["content"])
                 message = {"role": role, "content": content, "tool_calls": tool_calls}
                 if thinking_blocks := history_item.get("thinking_blocks"):
                     message["thinking_blocks"] = thinking_blocks
+                if reasoning_content := history_item.get("reasoning_content"):
+                    message["reasoning_content"] = reasoning_content
             else:
-                content = history_item["content"]
-                # Bedrock Converse API requires non-empty text content in every message block.
-                if self.config.name.startswith("bedrock/") and (not content or not content.strip()):
-                    content = "."
+                content = self._bedrock_ensure_content(history_item["content"])
                 message = {"role": role, "content": content}
                 if thinking_blocks := history_item.get("thinking_blocks"):
                     message["thinking_blocks"] = thinking_blocks
+                if reasoning_content := history_item.get("reasoning_content"):
+                    message["reasoning_content"] = reasoning_content
             if "cache_control" in history_item:
                 message["cache_control"] = history_item["cache_control"]
             messages.append(message)
@@ -1761,5 +1746,4 @@ def get_model(args: ModelConfig, tools: ToolConfig) -> AbstractModel:
     assert isinstance(
         args, GenericAPIModelConfig
     ), f"Expected {GenericAPIModelConfig}, got {args}"
-    assert isinstance(args, GenericAPIModelConfig), f"Expected {GenericAPIModelConfig}, got {args}"
     return LiteLLMModel(args, tools)
