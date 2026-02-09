@@ -140,7 +140,7 @@ class WandBHook(RunHook):
 
     def __init__(
         self,
-        project: str = "complexity-trap",
+        project: str = "the-complexity-trap",
         entity: str | None = None,
         group: str | None = None,
         tags: list[str] | None = None,
@@ -655,6 +655,12 @@ class WandBHook(RunHook):
 
     def _run_batch_eval(self, submissions: list[dict], n_submitted: int, n_instances_seen: int):
         """Run SWE-bench eval on submissions."""
+        if self._eval_backend != "docker":
+            # Batch eval is best-effort live logging. Avoid accidentally running Docker
+            # evaluation when the user selected sb-cli (VPS risk, quota/cost risk).
+            print(f"Skipping batch eval: eval_backend={self._eval_backend}")
+            return
+
         import tempfile
         from sweagent.utils.sbcli import run_docker_evaluation
 
@@ -858,7 +864,12 @@ class WandBHook(RunHook):
             return False
 
     def _execute_sbcli_eval(self, run_path: str | None = None) -> bool:
-        """Submit evaluation to sb-cli cloud service. Falls back to Docker on failure."""
+        """Submit evaluation to sb-cli cloud service.
+
+        Falls back to Docker on failure, except for guardrail-triggered errors (which
+        indicate a likely misconfiguration and should not be "fixed" by running a
+        potentially expensive Docker eval).
+        """
         from sweagent.utils.sbcli import run_sbcli_evaluation
 
         if not self._submissions:
@@ -882,6 +893,10 @@ class WandBHook(RunHook):
         )
 
         if not success:
+            if isinstance(error, str) and error.startswith("guardrail:"):
+                print(f"WARNING: sb-cli {error}")
+                print("🛑 Guardrail triggered; not falling back to Docker.")
+                return False
             print(f"WARNING: sb-cli {error}, falling back to Docker")
             return self._execute_final_eval(run_path=run_path)
 
