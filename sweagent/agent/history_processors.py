@@ -3,13 +3,17 @@ from __future__ import annotations
 import copy
 import re
 from abc import abstractmethod
-from typing import Annotated, List, Literal, Protocol
+from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, PrivateAttr
 
 from sweagent.agent.models import AbstractModel
 from sweagent.types import History, HistoryItem, Turns, SummaryMetadata
 from sweagent.utils.log import get_logger
+
+
+# chars reserved for the "[truncated N chars]" label appended after cutting
+_TRUNCATION_LABEL_PADDING = 50
 
 
 class AbstractHistoryProcessor(Protocol):
@@ -554,8 +558,8 @@ class SummarizeEveryNTurns(BaseModel):
                 if is_observation:
                     content = _get_content_text(item_copy)
                     if len(content) > self.max_observation_length_for_summary:
-                        truncated = content[:self.max_observation_length_for_summary - 50]
-                        truncated += f"\n...[truncated {len(content) - self.max_observation_length_for_summary + 50} chars for summary]..."
+                        truncated = content[:self.max_observation_length_for_summary - _TRUNCATION_LABEL_PADDING]
+                        truncated += f"\n...[truncated {len(content) - self.max_observation_length_for_summary + _TRUNCATION_LABEL_PADDING} chars for summary]..."
                         _set_content_text(item_copy, truncated)
                 compacted_turn.append(item_copy)
             compacted.append(compacted_turn)
