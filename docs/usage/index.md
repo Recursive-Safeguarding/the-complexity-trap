@@ -37,4 +37,12 @@ Just want to run it? See [getting started](../index.md) instead!
 
     [:octicons-arrow-right-24: Query Tool](../usage/query_tool.md)
 
+-   :material-check-circle:{ .lg .middle } __Evaluation__
+
+    ---
+
+    How evaluation works (Docker vs sb-cli) and how to backfill missing `results.json`.
+
+    [:octicons-arrow-right-24: Evaluation](../usage/evaluation_backends.md)
+
 </div>
