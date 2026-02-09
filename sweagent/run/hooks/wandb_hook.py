@@ -226,6 +226,59 @@ class WandBHook(RunHook):
         self._repo_counts: dict[str, int] = {}
         self._turn_counts: list[int] = []
 
+    def _build_summary_metrics(
+        self,
+        *,
+        totals: dict,
+        exit_status_counts: dict,
+        repo_counts: dict,
+        turn_counts: list[int],
+    ) -> dict:
+        """Derive averages, distributions, and fractions from raw totals."""
+        import statistics
+
+        n = totals["n_instances"]
+        total_raw = totals["total_raw_input_tokens"]
+        total_cached = totals["total_cached_input_tokens"]
+        total_input_all = total_raw + total_cached
+
+        exit_dist = {f"exit/{k}": v for k, v in exit_status_counts.items()}
+        repo_dist = {f"repo/{k}": v for k, v in repo_counts.items()}
+
+        turn_std = 0.0
+        turn_median = 0.0
+        turn_min = 0
+        turn_max = 0
+        if turn_counts:
+            turn_std = statistics.stdev(turn_counts) if len(turn_counts) > 1 else 0.0
+            turn_median = statistics.median(turn_counts)
+            turn_min = min(turn_counts)
+            turn_max = max(turn_counts)
+
+        total_cost = totals["total_cost"]
+        summary_cost_fraction = totals["total_summary_cost"] / total_cost if total_cost else 0
+        rloop_cost_fraction = totals["total_rloop_cost"] / total_cost if total_cost else 0
+
+        return {
+            **totals,
+            **exit_dist,
+            **repo_dist,
+            "submission_rate": totals["n_submitted"] / n if n else 0,
+            "cache_hit_rate": total_cached / total_input_all if total_input_all else 0,
+            "avg_cost": totals["total_cost"] / n if n else 0,
+            "avg_turns": totals["total_turns"] / n if n else 0,
+            "avg_api_calls": totals["total_api_calls"] / n if n else 0,
+            "avg_tokens_per_turn": total_input_all / totals["total_turns"] if totals["total_turns"] else 0,
+            "avg_patch_lines": totals["total_patch_lines"] / n if n else 0,
+            "avg_duration_ms": totals["total_duration_ms"] / n if n else 0,
+            "summary_cost_fraction": summary_cost_fraction,
+            "rloop_cost_fraction": rloop_cost_fraction,
+            "turn_std": turn_std,
+            "turn_median": turn_median,
+            "turn_min": turn_min,
+            "turn_max": turn_max,
+        }
+
     def _extract_repo(self, instance_id: str | None) -> str:
         """Extract repo from instance_id (e.g., 'django__django-12345' -> 'django')."""
         if not instance_id:
@@ -561,55 +614,12 @@ class WandBHook(RunHook):
             self._totals["total_patch_lines"] += patch_lines
             self._totals["total_duration_ms"] += instance_duration
 
-            n = self._totals["n_instances"]
-            total_raw = self._totals["total_raw_input_tokens"]
-            total_cached = self._totals["total_cached_input_tokens"]
-            total_input_all = total_raw + total_cached
-
-            # Build exit status distribution metrics (prefixed for WandB grouping)
-            exit_dist = {f"exit/{k}": v for k, v in self._exit_status_counts.items()}
-
-            # Build repo distribution metrics (prefixed for WandB grouping)
-            repo_dist = {f"repo/{k}": v for k, v in self._repo_counts.items()}
-
-            # Turn statistics
-            turn_std = 0.0
-            turn_median = 0.0
-            turn_min = 0
-            turn_max = 0
-            if self._turn_counts:
-                import statistics
-                turn_std = statistics.stdev(self._turn_counts) if len(self._turn_counts) > 1 else 0.0
-                turn_median = statistics.median(self._turn_counts)
-                turn_min = min(self._turn_counts)
-                turn_max = max(self._turn_counts)
-
-            # Cost fractions for live plotting
-            total_cost = self._totals["total_cost"]
-            summary_cost_fraction = self._totals["total_summary_cost"] / total_cost if total_cost else 0
-            rloop_cost_fraction = self._totals["total_rloop_cost"] / total_cost if total_cost else 0
-
-            live = {
-                **self._totals,
-                **exit_dist,
-                **repo_dist,
-                "submission_rate": self._totals["n_submitted"] / n if n else 0,
-                "cache_hit_rate": total_cached / total_input_all if total_input_all else 0,
-                "avg_cost": self._totals["total_cost"] / n if n else 0,
-                "avg_turns": self._totals["total_turns"] / n if n else 0,
-                "avg_api_calls": self._totals["total_api_calls"] / n if n else 0,
-                "avg_tokens_per_turn": total_input_all / self._totals["total_turns"] if self._totals["total_turns"] else 0,
-                "avg_patch_lines": self._totals["total_patch_lines"] / n if n else 0,
-                "avg_duration_ms": self._totals["total_duration_ms"] / n if n else 0,
-                # Cost fractions (for line plots over n_instances)
-                "summary_cost_fraction": summary_cost_fraction,
-                "rloop_cost_fraction": rloop_cost_fraction,
-                # Turn statistics
-                "turn_std": turn_std,
-                "turn_median": turn_median,
-                "turn_min": turn_min,
-                "turn_max": turn_max,
-            }
+            live = self._build_summary_metrics(
+                totals=self._totals,
+                exit_status_counts=self._exit_status_counts,
+                repo_counts=self._repo_counts,
+                turn_counts=self._turn_counts,
+            )
 
         # Log outside the lock (WandB has its own thread safety)
         self._safe_log(live)
@@ -923,9 +933,7 @@ class WandBHook(RunHook):
 
         try:
             import wandb
-            import statistics
 
-            # Snapshot all shared state under lock for thread safety
             with self._metrics_lock:
                 totals_copy = dict(self._totals)
                 exit_status_copy = dict(self._exit_status_counts)
@@ -933,68 +941,27 @@ class WandBHook(RunHook):
                 turn_counts_copy = list(self._turn_counts)
                 instances_copy = list(self._instances)
 
-            n = totals_copy["n_instances"]
-            raw = totals_copy["total_raw_input_tokens"]
-            cached = totals_copy["total_cached_input_tokens"]
-            total_input = raw + cached
+            final = self._build_summary_metrics(
+                totals=totals_copy,
+                exit_status_counts=exit_status_copy,
+                repo_counts=repo_counts_copy,
+                turn_counts=turn_counts_copy,
+            )
 
+            # api call fractions (only meaningful at sweep end)
             total_all_api_calls = (
                 totals_copy["total_api_calls"] +
                 totals_copy["total_summary_api_calls"] +
                 totals_copy["total_rloop_api_calls"]
             )
-
-            # Exit status distribution for final summary
-            exit_dist = {f"exit/{k}": v for k, v in exit_status_copy.items()}
-
-            # Repo distribution for final summary
-            repo_dist = {f"repo/{k}": v for k, v in repo_counts_copy.items()}
-
-            # Turn statistics
-            turn_std = 0.0
-            turn_median = 0.0
-            turn_min = 0
-            turn_max = 0
-            if turn_counts_copy:
-                turn_std = statistics.stdev(turn_counts_copy) if len(turn_counts_copy) > 1 else 0.0
-                turn_median = statistics.median(turn_counts_copy)
-                turn_min = min(turn_counts_copy)
-                turn_max = max(turn_counts_copy)
-
-            final = {
-                **totals_copy,
-                **exit_dist,
-                **repo_dist,
-                "submission_rate": totals_copy["n_submitted"] / n if n else 0,
-                "cache_hit_rate": cached / total_input if total_input else 0,
-                "avg_cost": totals_copy["total_cost"] / n if n else 0,
-                "avg_turns": totals_copy["total_turns"] / n if n else 0,
-                "avg_api_calls": totals_copy["total_api_calls"] / n if n else 0,
-                "avg_tokens_per_turn": total_input / totals_copy["total_turns"] if totals_copy["total_turns"] else 0,
-                "avg_patch_lines": totals_copy["total_patch_lines"] / n if n else 0,
-                "avg_duration_ms": totals_copy["total_duration_ms"] / n if n else 0,
-                "summary_cost_fraction": (
-                    totals_copy["total_summary_cost"] / totals_copy["total_cost"]
-                    if totals_copy["total_cost"] else 0
-                ),
-                "rloop_cost_fraction": (
-                    totals_copy["total_rloop_cost"] / totals_copy["total_cost"]
-                    if totals_copy["total_cost"] else 0
-                ),
-                "summary_api_fraction": (
-                    totals_copy["total_summary_api_calls"] / total_all_api_calls
-                    if total_all_api_calls else 0
-                ),
-                "rloop_api_fraction": (
-                    totals_copy["total_rloop_api_calls"] / total_all_api_calls
-                    if total_all_api_calls else 0
-                ),
-                # Turn statistics
-                "turn_std": turn_std,
-                "turn_median": turn_median,
-                "turn_min": turn_min,
-                "turn_max": turn_max,
-            }
+            final["summary_api_fraction"] = (
+                totals_copy["total_summary_api_calls"] / total_all_api_calls
+                if total_all_api_calls else 0
+            )
+            final["rloop_api_fraction"] = (
+                totals_copy["total_rloop_api_calls"] / total_all_api_calls
+                if total_all_api_calls else 0
+            )
 
             try:
                 wandb.summary.update(final)
