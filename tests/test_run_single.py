@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,11 @@ def test_run_ies_repo_ps_matrix(
     repo,
     problem_statement_source,
 ):
+    if problem_statement_source == "github" and not (
+        os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_JWT_TOKEN")
+    ):
+        pytest.skip("GITHUB_TOKEN/GITHUB_JWT_TOKEN not set; GitHub issue fetch is rate-limited")
+
     output_formats = ["traj", "pred", "patch"]
     for fmt in output_formats:
         assert not list(Path(tmpdir).glob(f"*.{fmt}"))

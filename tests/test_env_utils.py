@@ -71,11 +71,14 @@ def test_is_from_github_url():
 
 
 def test_get_associated_commit_urls():
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        pytest.skip("Requires GITHUB_TOKEN (avoids flaky unauthenticated GitHub API rate limiting)")
     assoc = _get_associated_commit_urls(
         org="SWE-agent",
         repo="SWE-agent",
         issue_number="41",
-        token=os.environ.get("GITHUB_TOKEN", ""),
+        token=token,
     )
     assert len(assoc) > 0
 

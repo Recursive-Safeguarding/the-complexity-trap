@@ -32,6 +32,91 @@ venv_bin = root_dir / ".venv" / "bin"
 if venv_bin.exists():
     os.environ["PATH"] = f"{venv_bin}:{os.environ.get('PATH', '')}"
 
+_DOCKER_AVAILABLE: tuple[bool, str] | None = None
+
+
+def _docker_available_cached() -> tuple[bool, str]:
+    """Return (ok, reason) for whether Docker is usable.
+
+    Many integration tests require a running Docker daemon. When Docker is not
+    available (common on fresh laptops/CI runners), we skip those tests rather
+    than failing with opaque socket errors.
+    """
+    global _DOCKER_AVAILABLE
+    if _DOCKER_AVAILABLE is not None:
+        return _DOCKER_AVAILABLE
+    try:
+        subprocess.run(
+            ["docker", "info"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=True,
+        )
+        # Many of our Docker integration tests also need network egress from
+        # inside containers (e.g., apt-get during image builds). A running daemon
+        # is not sufficient if Docker can't pull images or reach package mirrors.
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "debian:bookworm-slim",
+                    "bash",
+                    "-lc",
+                    # Fast-ish, representative probe: package index fetch + one small install.
+                    "apt-get update -qq && apt-get install -y -qq wget >/dev/null",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=90,
+                check=True,
+            )
+            _DOCKER_AVAILABLE = (True, "")
+        except subprocess.TimeoutExpired:
+            _DOCKER_AVAILABLE = (False, "docker ok but in-container network check timed out")
+        except subprocess.CalledProcessError as e:
+            tail = ""
+            try:
+                tail = (e.stderr or b"").decode("utf-8", "ignore").strip().splitlines()[-1]
+            except Exception:
+                tail = ""
+            msg = "docker ok but in-container network check failed"
+            if tail:
+                msg = f"{msg}: {tail}"
+            _DOCKER_AVAILABLE = (False, msg)
+    except FileNotFoundError:
+        _DOCKER_AVAILABLE = (False, "docker not installed")
+    except subprocess.TimeoutExpired:
+        _DOCKER_AVAILABLE = (False, "docker info timed out")
+    except subprocess.CalledProcessError:
+        _DOCKER_AVAILABLE = (False, "docker daemon not running")
+    except Exception as e:
+        _DOCKER_AVAILABLE = (False, str(e))
+    return _DOCKER_AVAILABLE
+
+
+def _docker_is_required() -> bool:
+    """Whether Docker must be available for this test run.
+
+    In CI we prefer to fail fast rather than silently skipping integration tests.
+    """
+    explicit = os.environ.get("SWE_AGENT_REQUIRE_DOCKER")
+    if explicit is not None:
+        return explicit.strip().lower() in ("1", "true", "yes", "y", "t")
+    return os.environ.get("CI", "").strip().lower() == "true"
+
+
+def pytest_runtest_setup(item) -> None:
+    # Our slow tests are integration-heavy and generally require Docker.
+    if "slow" in item.keywords:
+        ok, reason = _docker_available_cached()
+        if not ok:
+            if _docker_is_required():
+                pytest.fail(f"Docker required for slow tests but unavailable: {reason}")
+            pytest.skip(f"Skipping slow test (Docker unavailable: {reason})")
+
 
 @pytest.fixture
 def test_data_path() -> Path:

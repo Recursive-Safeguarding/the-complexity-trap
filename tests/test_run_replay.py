@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 
@@ -33,6 +34,8 @@ def _docker_available() -> bool:
 def test_replay(rr_config):
     if not _docker_available():
         pytest.skip("Docker not available")
+    if not os.environ.get("GITHUB_TOKEN"):
+        pytest.skip("Requires GITHUB_TOKEN (avoids flaky unauthenticated GitHub API rate limiting)")
     rr = RunReplay.from_config(rr_config, _catch_errors=False, _require_zero_exit_code=True)
     rr.main()
 
