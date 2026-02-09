@@ -203,6 +203,28 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
                 except (TypeError, ValueError):
                     return 0
 
+        def _boollike(val) -> bool:
+            """Coerce common WandB config encodings to bool.
+
+            WandB config may store booleans as strings/ints depending on how the run
+            was launched.
+            """
+            if val is None:
+                return False
+            if isinstance(val, (bool, np.bool_)):
+                return bool(val)
+            if isinstance(val, (int, float, np.integer, np.floating)):
+                # Treat NaN/Inf as missing rather than truthy (bool(np.nan) is True).
+                try:
+                    if isinstance(val, (float, np.floating)) and not np.isfinite(val):
+                        return False
+                except Exception:
+                    pass
+                return bool(val)
+            if isinstance(val, str):
+                return val.strip().lower() in ("true", "1", "yes", "y", "t")
+            return bool(val)
+
         n_instances = _intlike(_get("n_instances", 0))
         n_submitted = _intlike(_get("n_submitted", 0))
         n_resolved = _intlike(_get("n_resolved", 0))
@@ -243,6 +265,15 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
             "summarizer": _coalesce_str(config.get("summarizer_model"), "same"),
             "instances_subset": _coalesce_str(config.get("instances_subset"), "verified"),
             "eval_complete": eval_complete,
+
+            # Hyperparameters (from WandB config). These are needed to distinguish
+            # variants like limit-aware masking vs always-on masking.
+            "hp_obs_n": _intlike(config.get("hp_obs_n")),
+            "hp_sum_n": _intlike(config.get("hp_sum_n")),
+            "hp_sum_keep_m": _intlike(config.get("hp_sum_keep_m")),
+            "hp_limit_aware": _boollike(config.get("hp_limit_aware")),
+            "hp_limit_fraction": _safe_float(config.get("hp_limit_fraction")),
+            "hp_limit_min_tokens": _intlike(config.get("hp_limit_min_tokens")),
 
             "n_instances": n_instances,
             "n_submitted": n_submitted,

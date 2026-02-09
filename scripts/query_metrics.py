@@ -536,6 +536,23 @@ def compute_runs(
     """List runs with filtering."""
     work_df = df.copy()
 
+    # Backwards-compatibility: older cached dataframes or external callers may
+    # not include newer hyperparameter columns.
+    required_defaults = {
+        "summarizer": "same",
+        "instances_subset": "verified",
+        "hp_obs_n": np.nan,
+        "hp_sum_n": np.nan,
+        "hp_sum_keep_m": np.nan,
+        "hp_limit_aware": False,
+        "hp_limit_fraction": np.nan,
+        "hp_limit_min_tokens": np.nan,
+        "eval_complete": False,
+    }
+    for col, default in required_defaults.items():
+        if col not in work_df.columns:
+            work_df[col] = default
+
     if model_filter:
         work_df = work_df[
             work_df["model"].str.contains(model_filter, case=False, na=False)
@@ -563,6 +580,14 @@ def compute_runs(
             "run_name",
             "model",
             "strategy",
+            "summarizer",
+            "instances_subset",
+            "hp_obs_n",
+            "hp_sum_n",
+            "hp_sum_keep_m",
+            "hp_limit_aware",
+            "hp_limit_fraction",
+            "hp_limit_min_tokens",
             "n_instances",
             "n_resolved",
             "solve_rate",
@@ -583,6 +608,14 @@ def compute_runs(
             "run_name",
             "model",
             "strategy",
+            "summarizer",
+            "instances_subset",
+            "hp_obs_n",
+            "hp_sum_n",
+            "hp_sum_keep_m",
+            "hp_limit_aware",
+            "hp_limit_fraction",
+            "hp_limit_min_tokens",
             "n_instances",
             "n_resolved",
             "solve_rate",
