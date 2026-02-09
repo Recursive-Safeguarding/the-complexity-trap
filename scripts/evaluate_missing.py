@@ -64,10 +64,23 @@ def matches_subset(dataset_tag: str | None, subset: str) -> bool:
 
 
 def find_unevaluated_runs(base_dir: Path, subset: str) -> list[Path]:
-    """Find runs with preds.json but no results.json."""
+    """Find runs with preds.json but missing/invalid results.json.
+
+    We treat `results.json` as the end-to-end contract: predictions existed and an
+    evaluator produced parseable totals. Merely having a file named results.json is
+    not sufficient, since failed/malformed evaluations can leave empty or partial
+    artifacts behind.
+    """
     runs = []
     if not base_dir.exists():
         return runs
+
+    # Avoid importing sweagent at module import time; this script is often run on
+    # remote machines where users want a quick "what needs evaluation?" pass.
+    try:
+        from sweagent.utils.sbcli import parse_eval_results
+    except Exception:
+        parse_eval_results = None  # type: ignore[assignment]
 
     for user_dir in base_dir.iterdir():
         if not user_dir.is_dir():
@@ -84,7 +97,19 @@ def find_unevaluated_runs(base_dir: Path, subset: str) -> list[Path]:
             alt_preds = run_dir / "all.preds.json"
             results = run_dir / "results.json"
 
-            if (preds.exists() or alt_preds.exists()) and not results.exists():
+            has_preds = preds.exists() or alt_preds.exists()
+            if not has_preds:
+                continue
+
+            results_ok = False
+            if results.exists() and parse_eval_results is not None:
+                try:
+                    parsed = parse_eval_results(results)
+                    results_ok = bool(parsed and int(parsed.get("n_evaluated", 0)) > 0)
+                except Exception:
+                    results_ok = False
+
+            if has_preds and not results_ok:
                 runs.append(run_dir)
 
     return sorted(runs, key=lambda p: p.stat().st_mtime)
@@ -158,6 +183,11 @@ def evaluate_run_sbcli(
 
     if not success:
         print(f"   ⚠️  sb-cli {error}")
+        # If the sb-cli wrapper refused to run for safety reasons, don't
+        # silently fall back to Docker (this likely indicates a misconfigured run).
+        if isinstance(error, str) and error.startswith("guardrail:"):
+            print("   🛑 Guardrail triggered; not falling back to Docker.")
+            return None
         print("   🐳 Falling back to Docker...")
         return evaluate_run(run_dir, subset, workers, timeout)
 
@@ -243,7 +273,7 @@ def main():
     parser.add_argument(
         "--backend",
         choices=["docker", "sbcli"],
-        default="docker",
+        default="sbcli",
         help="Evaluation backend: docker (local) or sbcli (cloud)",
     )
     args = parser.parse_args()
