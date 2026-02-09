@@ -1,6 +1,6 @@
 # Complete missing GLM-4.7 summarizer configs
 # 2 strategies × 2 summarizers = 4 runs (3 actually needed)
-# Missing: llm_summary+glm-4.7, hybrid+glm-4.7, hybrid+kimi-k2
+# Missing: llm_summary+glm-4.7, hybrid+glm-4.7, hybrid+kimi-2.5
 
 program: scripts/run_sweep.py
 method: grid
@@ -9,7 +9,7 @@ metric: {name: solve_rate, goal: maximize}
 parameters:
   model: {value: glm-4.7}
   strategy: {values: [llm_summary, hybrid]}
-  summarizer-model: {values: [glm-4.7, kimi-k2]}
+  summarizer-model: {values: [glm-4.7, kimi-2.5]}
   instances-subset: {value: verified-mini}
   instances-shuffle: {value: false}
   call-limit: {value: 250}

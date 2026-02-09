@@ -10,7 +10,7 @@ early_terminate: {type: hyperband, min_iter: 3, eta: 2, s: 2}
 parameters:
   model: {value: glm-4.7}
   strategy: {values: [raw, observation_masking, llm_summary, hybrid]}
-  summarizer-model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.7, kimi-k2, minimax-m2.1, gpt-4o-mini]}
+  summarizer-model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.7, kimi-2.5, minimax-m2.1, gpt-4o-mini]}
 
   # observation_masking, hybrid
   hp-obs-n: {values: [5, 10, 15]}

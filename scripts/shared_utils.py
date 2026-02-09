@@ -62,9 +62,11 @@ def add_model_cli_args(
     if model_args.get("bypass_cost_limits"):
         cmd.extend([f"{prefix}.bypass_cost_limits", "True"])
 
-    # extra_headers via completion_kwargs
+    # extra_headers and extra_body via completion_kwargs
     completion_kwargs = dict(model_args.get("completion_kwargs") or {})
     if model_args.get("extra_headers"):
         completion_kwargs.setdefault("extra_headers", model_args["extra_headers"])
+    if model_args.get("extra_body"):
+        completion_kwargs.setdefault("extra_body", model_args["extra_body"])
     if completion_kwargs:
         cmd.extend([f"{prefix}.completion_kwargs", json.dumps(completion_kwargs)])

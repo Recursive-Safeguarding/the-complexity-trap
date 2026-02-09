@@ -99,7 +99,8 @@ MODEL_PROVIDER = {
     "glm-4.5-air": "zhipu",
     "glm-4.6": "zhipu",
     "glm-4.7": "zhipu",
-    "kimi-k2": "moonshot",
+    "kimi-2.5": "moonshot",
+    "kimi-2.5-thinking": "moonshot",
     "minimax-m2": "minimax",
     "minimax-m2.1": "minimax",
     "gpt-4o-mini": "openai",
@@ -442,6 +443,13 @@ def generate_custom_config(base_config_path: str, args, output_path: Path, model
         config["agent"]["model"]["completion_kwargs"]["extra_headers"] = model_args["extra_headers"]
         modified = True
 
+    # Set extra_body (e.g., thinking mode disabled)
+    if model_args and model_args.get("extra_body"):
+        if "completion_kwargs" not in config["agent"]["model"]:
+            config["agent"]["model"]["completion_kwargs"] = {}
+        config["agent"]["model"]["completion_kwargs"]["extra_body"] = model_args["extra_body"]
+        modified = True
+
     # Add extra_headers to summary_model config if present
     if summarizer_model_args and summarizer_model_args.get("extra_headers"):
         if "summary_model" not in config["agent"]:
@@ -449,6 +457,15 @@ def generate_custom_config(base_config_path: str, args, output_path: Path, model
         if "completion_kwargs" not in config["agent"]["summary_model"]:
             config["agent"]["summary_model"]["completion_kwargs"] = {}
         config["agent"]["summary_model"]["completion_kwargs"]["extra_headers"] = summarizer_model_args["extra_headers"]
+        modified = True
+
+    # Add extra_body to summary_model config if present
+    if summarizer_model_args and summarizer_model_args.get("extra_body"):
+        if "summary_model" not in config["agent"]:
+            config["agent"]["summary_model"] = {}
+        if "completion_kwargs" not in config["agent"]["summary_model"]:
+            config["agent"]["summary_model"]["completion_kwargs"] = {}
+        config["agent"]["summary_model"]["completion_kwargs"]["extra_body"] = summarizer_model_args["extra_body"]
         modified = True
 
     if "history_processors" in config.get("agent", {}):

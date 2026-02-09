@@ -17,6 +17,7 @@ class ModelPreset:
     max_input_tokens: int | None = None
     max_output_tokens: int | None = None
     extra_headers: dict[str, str] | None = None
+    extra_body: dict[str, Any] | None = None
     # Total context window (in+out). Defaults to max_input_tokens if None.
     context_window: int | None = None
     # Bypass cost limits (subscription/free-tier). Tracking remains active.
@@ -34,6 +35,8 @@ class ModelPreset:
             args["max_output_tokens"] = self.max_output_tokens
         if self.extra_headers:
             args["extra_headers"] = self.extra_headers
+        if self.extra_body:
+            args["extra_body"] = self.extra_body
         if self.context_window:
             args["context_window"] = self.context_window
         if self.bypass_cost_limits:
@@ -143,8 +146,27 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
     "minimax-m2.1": ModelPreset("anthropic/minimax-m2.1", api_base="https://api.minimax.io/anthropic", api_key_var="MINIMAX_API_KEY", description="MiniMax M2.1 (enhanced multilingual, faster)", max_input_tokens=204800, max_output_tokens=131072, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
 
     # Kimi / Moonshot - bypass cost limits
-    "kimi-k2": ModelPreset("openai/kimi-for-coding", api_base="https://api.kimi.com/coding/v1", api_key_var="MOONSHOT_API_KEY", description="Kimi K2 (1T MoE, 32B active)", max_input_tokens=262144, max_output_tokens=32768, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
-    "kimi-k2-free": ModelPreset("openrouter/moonshotai/kimi-k2:free", api_key_var="OPENROUTER_API_KEY", description="Kimi K2 (OpenRouter free)", bypass_cost_limits=True),
+    "kimi-2.5": ModelPreset(
+        "openai/k2p5",
+        api_base="https://api.kimi.com/coding/v1",
+        api_key_var="MOONSHOT_API_KEY",
+        description="Kimi K2.5 (1T MoE, 32B active, multimodal agentic)",
+        max_input_tokens=262144,
+        max_output_tokens=32768,
+        extra_headers={"User-Agent": "claude-code/1.0"},
+        extra_body={"thinking": {"type": "disabled"}},
+        bypass_cost_limits=True,
+    ),
+    "kimi-2.5-thinking": ModelPreset(
+        "openai/k2p5",
+        api_base="https://api.kimi.com/coding/v1",
+        api_key_var="MOONSHOT_API_KEY",
+        description="Kimi K2.5 with thinking enabled",
+        max_input_tokens=262144,
+        max_output_tokens=32768,
+        extra_headers={"User-Agent": "claude-code/1.0"},
+        bypass_cost_limits=True,
+    ),
 
     # Vertex AI
     "gemini-2.5-flash": ModelPreset("vertex_ai/gemini-2.5-flash", description="Gemini 2.5 Flash"),
@@ -183,10 +205,18 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
 # Subscription models - real pricing for benchmarking (cost limits bypassed via not_actual_cost)
 # Sources: costgoat.com, docs.z.ai, minimaxm2.io
 CUSTOM_MODEL_PRICING: dict[str, dict] = {
-    "openai/kimi-for-coding": {
+    "openai/k2p5": {
         "input_cost_per_token": 0.60 / 1_000_000,  # $0.60/M tokens
         "output_cost_per_token": 2.50 / 1_000_000,  # $2.50/M tokens
         "cache_read_input_token_cost": 0.15 / 1_000_000,  # $0.15/M (cache hit)
+        "max_tokens": 262144,
+        "litellm_provider": "openai",
+        "mode": "chat",
+    },
+    "k2p5": {
+        "input_cost_per_token": 0.60 / 1_000_000,
+        "output_cost_per_token": 2.50 / 1_000_000,
+        "cache_read_input_token_cost": 0.15 / 1_000_000,
         "max_tokens": 262144,
         "litellm_provider": "openai",
         "mode": "chat",

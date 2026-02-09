@@ -103,7 +103,7 @@ python scripts/query.py failures
 |--------|----------|-------------|---------|
 | `glm-4.7` | Z.AI | GLM-4.7 (agentic coding) | 200K |
 | `glm-4.6` | Z.AI | GLM-4.6 (355B MoE) | 200K |
-| `kimi-k2` | Moonshot | Kimi K2 (1T MoE, 32B active) | 262K |
+| `kimi-2.5` | Moonshot | Kimi K2.5 (1T MoE, 32B active) | 262K |
 | `minimax-m2.1` | MiniMax | M2.1 (enhanced multilingual) | 205K |
 | `deepseek-chat` | DeepSeek | DeepSeek V3 | 128K |
 | `bedrock-qwen3-coder-480b` | AWS Bedrock | Qwen3 Coder 480B | 262K |

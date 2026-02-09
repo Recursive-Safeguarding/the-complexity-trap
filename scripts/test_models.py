@@ -26,7 +26,7 @@ TEST_MODELS = [
     "glm-4.7",              # GLM-4.7 (ZhipuAI, agentic coding)
     "minimax-m2",           # MiniMax M2
     "minimax-m2.1",         # MiniMax M2.1 (enhanced)
-    "kimi-k2",              # Kimi/Moonshot
+    "kimi-2.5",             # Kimi/Moonshot
     "bedrock-qwen3-32b",    # AWS Bedrock (paper-repro model)
     "bedrock-nova-pro",     # Amazon model on AWS Bedrock
     "openrouter/qwen/qwen3-coder:free",  # Qwen 3 480B (may hit rate limits)
@@ -158,7 +158,7 @@ Examples:
   python scripts/test_models.py
 
   # Test specific models with verbose output
-  python scripts/test_models.py kimi-k2 glm-4.7 minimax-m2.1 --verbose
+  python scripts/test_models.py kimi-2.5 glm-4.7 minimax-m2.1 --verbose
 
   # List available models
   python scripts/test_models.py --list

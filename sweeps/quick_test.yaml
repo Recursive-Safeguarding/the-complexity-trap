@@ -5,9 +5,9 @@ method: grid
 metric: {name: solve_rate, goal: maximize}
 
 parameters:
-  model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.7, kimi-k2, minimax-m2.1, gpt-4o-mini]}
+  model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.7, kimi-2.5, minimax-m2.1, gpt-4o-mini]}
   strategy: {values: [raw, observation_masking, llm_summary, hybrid]}
-  summarizer-model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.7, kimi-k2, minimax-m2.1, gpt-4o-mini]}
+  summarizer-model: {values: [deepseek-chat, bedrock-qwen3-32b, glm-4.7, kimi-2.5, minimax-m2.1, gpt-4o-mini]}
   instances-subset: {value: verified}
   instances-slice: {value: ":3"}
   instances-shuffle: {value: true}

@@ -48,7 +48,7 @@ wandb agent <your-entity>/complexity-trap-test/<sweep_id> --count 5
 | `deepseek-chat` | DeepSeek | V3, very cheap |
 | `gpt-4o-mini` | OpenAI | Cheap, reliable |
 | `glm-4.7` | ZhipuAI | Latest version via Z.AI endpoint |
-| `kimi-k2` | Moonshot | Anthropic-compatible |
+| `kimi-2.5` | Moonshot | K2.5, thinking disabled |
 
 ## Direct Usage (No Sweep)
 

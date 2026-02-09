@@ -8,7 +8,7 @@ metric: {name: solve_rate, goal: maximize}
 parameters:
   model: {value: glm-4.7}
   strategy: {values: [llm_summary, hybrid]}
-  summarizer-model: {values: [bedrock-qwen3-coder-480b, glm-4.7, kimi-k2]}
+  summarizer-model: {values: [bedrock-qwen3-coder-480b, glm-4.7, kimi-2.5]}
   instances-subset: {value: verified-mini}
   instances-shuffle: {value: false}
   call-limit: {value: 250}

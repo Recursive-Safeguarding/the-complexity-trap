@@ -3,7 +3,7 @@
 
 Examples:
     python scripts/run_model.py --list
-    python scripts/run_model.py kimi-k2 --config config/default_no_demo_N=1_M=10.yaml
+    python scripts/run_model.py kimi-2.5 --config config/default_no_demo_N=1_M=10.yaml
     python scripts/run_model.py bedrock-qwen3-32b --instances-slice :5 --dry-run
 """
 
@@ -40,7 +40,7 @@ def parse_args():
     parser.add_argument(
         "model",
         nargs="?",
-        help="Model preset (kimi-k2, glm-4.7, etc)",
+        help="Model preset (kimi-2.5, glm-4.7, etc)",
     )
     parser.add_argument(
         "--list",
