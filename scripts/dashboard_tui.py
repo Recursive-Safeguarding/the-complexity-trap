@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -35,34 +34,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from dashboard_shared import (
     PAPER_BASELINES,
+    _coalesce_str as _str,
+    _safe_int as _int,
+    find_paper_baseline,
     fetch_runs,
     dedupe_latest_runs,
     get_project_config,
 )
 
 console = Console()
-
-def _str(val, default: str = "") -> str:
-    if val is None:
-        return default
-    try:
-        if pd.isna(val):
-            return default
-    except (ValueError, TypeError):
-        pass
-    return str(val)
-
-
-def _int(val, default: int = 0) -> int:
-    if val is None:
-        return default
-    try:
-        if pd.isna(val):
-            return default
-        return int(val)
-    except (ValueError, TypeError):
-        return default
-
 
 COLORS = {
     "title": "bold bright_cyan",
@@ -188,38 +168,11 @@ def build_comparison_table(df: pd.DataFrame) -> Table:
         model = _str(row["model"])
         strategy = _str(row["strategy"])
 
-        # Prefer exact match, then substring match with thinking parity.
-        paper_model = None
-        model_lower = model.lower()
-
-        def _is_thinking(name: str) -> bool:
-            return bool(re.search(r"(^|[-_\s])thinking($|[-_\s])", name))
-
-        if not model_lower or model_lower in ("unknown", "none"):
-            paper_model = None
-        elif model_lower in PAPER_BASELINES:
-            paper_model = model_lower
-        else:
-            candidates = [pm for pm in PAPER_BASELINES if pm in model_lower]
-            if candidates:
-                model_thinking = _is_thinking(model_lower)
-                parity = [pm for pm in candidates if _is_thinking(pm) == model_thinking]
-                pool = parity if parity else candidates
-                paper_model = max(pool, key=len)
-
-        paper_vals = (
-            PAPER_BASELINES.get(paper_model, {}).get(strategy, {})
-            if paper_model
-            else {}
-        )
+        paper_vals = find_paper_baseline(model, strategy) or {}
         paper_rate = paper_vals.get("solve_rate")
         paper_cost = paper_vals.get("avg_cost")
 
-        raw_vals = (
-            PAPER_BASELINES.get(paper_model, {}).get("raw", {})
-            if paper_model
-            else {}
-        )
+        raw_vals = find_paper_baseline(model, "raw") or {}
         raw_rate = raw_vals.get("solve_rate")
         raw_cost = raw_vals.get("avg_cost")
 

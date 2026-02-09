@@ -227,7 +227,7 @@ python scripts/query.py failures
 
 # Is one model worse?
 python scripts/query.py --model glm-4.7 failures
-python scripts/query.py --model kimi-k2 failures
+python scripts/query.py --model kimi-2.5 failures
 
 # Is one strategy worse?
 python scripts/query.py --strategy hybrid failures

@@ -9,7 +9,6 @@ and TUI (Rich) dashboards without pulling in unnecessary dependencies.
 from __future__ import annotations
 
 import os
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -59,19 +58,16 @@ PAPER_BASELINES = {
     },
 }
 
-# Our measured results (separate from paper baselines)
-# GLM-4.7 on SWE-bench Verified-Mini (50 instances per strategy)
-# Key finding: Context management HURTS GLM-4.7 (opposite of paper's qwen3-coder-480b results)
-OUR_BASELINES = {
-    "glm-4.7": {
-        "raw": {"solve_rate": 0.640, "avg_cost": 1.00, "rate_ci": 0.068, "cost_ci": 0.15},
-        "observation_masking": {"solve_rate": 0.620, "avg_cost": 0.68, "rate_ci": 0.069, "cost_ci": 0.10,
-                                "rate_delta": -0.031, "cost_delta": -0.320},
-        "llm_summary": {"solve_rate": 0.540, "avg_cost": 0.55, "rate_ci": 0.070, "cost_ci": 0.08,
-                        "rate_delta": -0.156, "cost_delta": -0.450},
-        "hybrid": {"solve_rate": 0.560, "avg_cost": 0.42, "rate_ci": 0.070, "cost_ci": 0.06,
-                   "rate_delta": -0.125, "cost_delta": -0.580},
-    },
+# Phase 3 periodic results (GLM-4.7, n=50, verified-mini) with per-summarizer detail.
+# Used by paper_results.py for Table 1.
+PHASE3_PERIODIC = {
+    "raw": {"k": 32, "n": 50, "rate": 0.640, "cost": 1.00},
+    "masking": {"k": 31, "n": 50, "rate": 0.620, "cost": 0.68},
+    # self-summary had 49/50 coverage; solve_rate still uses the full 50-instance slice
+    "summary_self": {"k": 28, "n": 50, "rate": 0.560, "cost": 1.43},
+    "summary_minimax": {"k": 27, "n": 50, "rate": 0.540, "cost": 1.34},
+    "summary_kimi": {"k": 7, "n": 50, "rate": 0.140, "cost": None},
+    "hybrid_minimax": {"k": 28, "n": 50, "rate": 0.560, "cost": 0.42},
 }
 
 # Table 2: LLM-Summary generation costs per model
@@ -122,7 +118,7 @@ def _safe_float(val, default=np.nan):
         return default
 
 
-def _coalesce_str(val, default: str) -> str:
+def _coalesce_str(val, default: str = "") -> str:
     if val is None:
         return default
     try:
@@ -132,6 +128,77 @@ def _coalesce_str(val, default: str) -> str:
         pass
     s = str(val)
     return s if s else default
+
+
+def _safe_int(val, default: int = 0) -> int:
+    if val is None:
+        return default
+    try:
+        if pd.isna(val):
+            return default
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
+# strategy name aliases (WandB configs may use short names)
+STRATEGY_ALIASES = {
+    "obs_masking": "observation_masking",
+    "obs": "observation_masking",
+    "sum": "llm_summary",
+    "hyb": "hybrid",
+}
+
+
+def normalize_strategy(strategy: str) -> str:
+    s = strategy.lower()
+    return STRATEGY_ALIASES.get(s, s)
+
+
+def find_paper_baseline(model: str | None, strategy: str) -> dict[str, float] | None:
+    """Fuzzy-match a model×strategy to PAPER_BASELINES. Exact > substring > partial."""
+    if not model or model.lower() in ("unknown", "none"):
+        return None
+    strategy = normalize_strategy(strategy)
+    model_lower = model.lower()
+
+    best_match = None
+    best_score = -1
+
+    for paper_model, strategies in PAPER_BASELINES.items():
+        if strategy not in strategies:
+            continue
+
+        if paper_model == model_lower:
+            score = 1000 + len(paper_model)
+        elif paper_model in model_lower:
+            score = 100 + len(paper_model)
+        elif model_lower in paper_model:
+            score = len(model_lower)
+        else:
+            continue
+
+        if score > best_score:
+            best_match = strategies[strategy]
+            best_score = score
+
+    return best_match
+
+
+def calculate_rate_delta(our_rate: float, paper_rate: float | None) -> str:
+    if paper_rate is None or pd.isna(our_rate):
+        return "—"
+    delta = our_rate - paper_rate
+    sign = "+" if delta >= 0 else ""
+    return f"{sign}{delta:.1%}"
+
+
+def calculate_cost_delta(our_cost: float, paper_cost: float | None) -> str:
+    if paper_cost is None or pd.isna(our_cost) or paper_cost == 0:
+        return "—"
+    delta_pct = ((our_cost - paper_cost) / paper_cost) * 100
+    sign = "+" if delta_pct >= 0 else ""
+    return f"{sign}{delta_pct:.0f}%"
 
 
 def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) -> pd.DataFrame:
@@ -204,17 +271,12 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
                     return 0
 
         def _boollike(val) -> bool:
-            """Coerce common WandB config encodings to bool.
-
-            WandB config may store booleans as strings/ints depending on how the run
-            was launched.
-            """
             if val is None:
                 return False
             if isinstance(val, (bool, np.bool_)):
                 return bool(val)
             if isinstance(val, (int, float, np.integer, np.floating)):
-                # Treat NaN/Inf as missing rather than truthy (bool(np.nan) is True).
+                # bool(np.nan) is True; treat non-finite as False
                 try:
                     if isinstance(val, (float, np.floating)) and not np.isfinite(val):
                         return False
@@ -266,8 +328,7 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
             "instances_subset": _coalesce_str(config.get("instances_subset"), "verified"),
             "eval_complete": eval_complete,
 
-            # Hyperparameters (from WandB config). These are needed to distinguish
-            # variants like limit-aware masking vs always-on masking.
+            # distinguish limit-aware vs always-on variants
             "hp_obs_n": _intlike(config.get("hp_obs_n")),
             "hp_sum_n": _intlike(config.get("hp_sum_n")),
             "hp_sum_keep_m": _intlike(config.get("hp_sum_keep_m")),

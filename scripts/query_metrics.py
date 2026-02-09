@@ -13,88 +13,22 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from dashboard_shared import PAPER_BASELINES, dedupe_latest_runs
-
-# strategy name aliases (WandB configs may use short names)
-STRATEGY_ALIASES = {
-    "obs_masking": "observation_masking",
-    "obs": "observation_masking",
-    "sum": "llm_summary",
-    "hyb": "hybrid",
-}
-
-
-def normalize_strategy(strategy: str) -> str:
-    """Normalize strategy name to match PAPER_BASELINES keys."""
-    s = strategy.lower()
-    return STRATEGY_ALIASES.get(s, s)
+from dashboard_shared import (
+    dedupe_latest_runs,
+    find_paper_baseline,
+    calculate_rate_delta,
+    calculate_cost_delta,
+)
 
 
 @dataclass
 class QueryResult:
-    """Typed result from a query function."""
-
     data: pd.DataFrame
     title: str
     insights: list[str]
     columns: list[str]
     sort_by: str | None = None
     sort_ascending: bool = False
-
-
-def find_paper_baseline(model: str, strategy: str) -> dict[str, float] | None:
-    """Find matching paper baseline for a model×strategy combination.
-
-    Uses fuzzy matching with exact-match priority. Normalizes strategy names
-    to handle aliases like obs_masking -> observation_masking.
-    """
-    # normalize strategy name
-    strategy = normalize_strategy(strategy)
-    model_lower = model.lower()
-
-    best_match = None
-    best_score = -1  # higher is better
-
-    for paper_model, strategies in PAPER_BASELINES.items():
-        if strategy not in strategies:
-            continue
-
-        # scoring: exact match > our model contains paper > paper contains our model
-        if paper_model == model_lower:
-            score = 1000 + len(paper_model)  # exact match wins
-        elif paper_model in model_lower:
-            # paper_model is substring of our model (e.g., "qwen3-32b" in "bedrock-qwen3-32b")
-            score = 100 + len(paper_model)
-        elif model_lower in paper_model:
-            # our model is substring of paper_model - avoid matching shorter to longer
-            # e.g., don't match "qwen3-32b" to "qwen3-32b-thinking"
-            score = len(model_lower)  # lower priority
-        else:
-            continue
-
-        if score > best_score:
-            best_match = strategies[strategy]
-            best_score = score
-
-    return best_match
-
-
-def calculate_rate_delta(our_rate: float, paper_rate: float | None) -> str:
-    """Calculate rate delta as formatted string."""
-    if paper_rate is None or pd.isna(our_rate):
-        return "—"
-    delta = our_rate - paper_rate
-    sign = "+" if delta >= 0 else ""
-    return f"{sign}{delta:.1%}"
-
-
-def calculate_cost_delta(our_cost: float, paper_cost: float | None) -> str:
-    """Calculate cost delta as percentage string."""
-    if paper_cost is None or pd.isna(our_cost) or paper_cost == 0:
-        return "—"
-    delta_pct = ((our_cost - paper_cost) / paper_cost) * 100
-    sign = "+" if delta_pct >= 0 else ""
-    return f"{sign}{delta_pct:.0f}%"
 
 
 def aggregate_by_model_strategy(df: pd.DataFrame) -> pd.DataFrame:

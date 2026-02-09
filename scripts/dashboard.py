@@ -13,7 +13,6 @@ Usage:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import numpy as np
@@ -49,9 +48,8 @@ def fetch_runs(project: str, entity: str | None = None) -> pd.DataFrame:
         st.stop()
 
 
-def build_pareto_plot(df: pd.DataFrame, show_baselines: bool = True) -> go.Figure:
-    """Build Pareto scatter: cost (log x) vs solve rate (y)."""
-    # Map 0→epsilon for log scale
+def _pareto_scatter(df: pd.DataFrame, extra_hover: list[str] | None = None) -> go.Figure:
+    """Shared data prep + scatter for Pareto plots."""
     df_valid = df[df["avg_cost"].notna()].copy()
     if "eval_complete" in df_valid.columns:
         df_valid = df_valid[df_valid["eval_complete"]]
@@ -64,6 +62,9 @@ def build_pareto_plot(df: pd.DataFrame, show_baselines: bool = True) -> go.Figur
         fig.update_layout(template="plotly_dark")
         return fig
 
+    hover_cols = ["model", "strategy", "n_instances", "avg_turns"]
+    hover_cols += extra_hover or ["submission_rate", "avg_cost"]
+
     fig = px.scatter(
         df_valid,
         x="avg_cost_display",
@@ -72,12 +73,18 @@ def build_pareto_plot(df: pd.DataFrame, show_baselines: bool = True) -> go.Figur
         symbol="model",
         size="n_instances",
         hover_name="run_name",
-        hover_data=["model", "strategy", "n_instances", "avg_turns", "submission_rate", "avg_cost"],
+        hover_data=hover_cols,
         labels={"avg_cost_display": "Avg Cost ($)", "solve_rate": "Solve Rate", "avg_cost": "Actual Cost"},
     )
 
     fig.update_xaxes(type="log", title="Avg Cost ($)")
     fig.update_yaxes(title="Solve Rate", tickformat=".0%")
+    return fig
+
+
+def build_pareto_plot(df: pd.DataFrame, show_baselines: bool = True) -> go.Figure:
+    """Build Pareto scatter: cost (log x) vs solve rate (y)."""
+    fig = _pareto_scatter(df)
     fig.update_layout(
         template="plotly_dark",
         title="",
@@ -94,7 +101,6 @@ def build_pareto_plot(df: pd.DataFrame, show_baselines: bool = True) -> go.Figur
     )
 
     if show_baselines:
-        # Add paper reference points (using solve_rate from paper)
         for strategy, vals in PAPER_BASELINES.get("qwen3-coder-480b", {}).items():
             fig.add_scatter(
                 x=[vals["avg_cost"]],
@@ -390,34 +396,7 @@ def render_instance_explorer(df: pd.DataFrame):
 
 def build_pareto_with_all_baselines(df: pd.DataFrame) -> go.Figure:
     """Build Pareto scatter with ALL paper baselines (all 5 models)."""
-    df_valid = df[df["avg_cost"].notna()].copy()
-    if "eval_complete" in df_valid.columns:
-        df_valid = df_valid[df_valid["eval_complete"]]
-    df_valid = df_valid[df_valid["solve_rate"].notna()]
-    df_valid["avg_cost_display"] = df_valid["avg_cost"].apply(lambda x: max(x, 0.001))
-
-    if df_valid.empty:
-        fig = go.Figure()
-        fig.add_annotation(text="No runs with cost data", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
-        fig.update_layout(template="plotly_dark")
-        return fig
-
-    fig = px.scatter(
-        df_valid,
-        x="avg_cost_display",
-        y="solve_rate",
-        color="strategy",
-        symbol="model",
-        size="n_instances",
-        hover_name="run_name",
-        hover_data=["model", "strategy", "n_instances", "avg_turns", "n_resolved", "avg_cost"],
-        labels={"avg_cost_display": "Avg Cost ($)", "solve_rate": "Solve Rate", "avg_cost": "Actual Cost"},
-    )
-
-    fig.update_xaxes(type="log", title="Avg Cost ($)")
-    fig.update_yaxes(title="Solve Rate", tickformat=".0%")
-
-    # Add ALL paper baselines with different colors per model (with error bars)
+    fig = _pareto_scatter(df, extra_hover=["n_resolved", "avg_cost"])
     model_colors = {
         "qwen3-32b": "#60a5fa",  # blue
         "qwen3-32b-thinking": "#34d399",  # green
