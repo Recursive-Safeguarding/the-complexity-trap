@@ -533,7 +533,19 @@ def build_sweagent_command(args) -> tuple[list[str], Path]:
     base_config_file = STRATEGY_CONFIGS[args.strategy]
     ts = time.strftime("%Y%m%d_%H%M%S")
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "user"
-    custom_config_path = Path("config/.generated") / user / f"config_{ts}_{_safe_name(args.model)}_{args.strategy}.yaml"
+    # Avoid collisions when launching multiple runs in the same second (e.g. parallel tmux sessions).
+    # Collisions can silently corrupt configs (e.g. self-summarizer accidentally picking up a
+    # specialist summary_model section from another run).
+    nonce = str(time.time_ns())
+    sum_tag = "nosum"
+    if args.strategy in SUMMARIZER_STRATEGIES:
+        effective_sum = args.model if args.summarizer_model == "same" else args.summarizer_model
+        sum_tag = _safe_name(effective_sum).replace("bedrock-", "")
+    custom_config_path = (
+        Path("config/.generated")
+        / user
+        / f"config_{ts}_{_safe_name(args.model)}_{args.strategy}_{sum_tag}_{nonce}.yaml"
+    )
     config_file = str(generate_custom_config(base_config_file, args, custom_config_path, model_args, summarizer_model_args))
     cmd = [
         "sweagent", "run-batch",
@@ -738,6 +750,10 @@ def run_evaluation(
         )
 
         if not success or results_path is None:
+            # Guardrail errors indicate likely misconfiguration (e.g., a non-mini run
+            # being evaluated as verified-mini). Do not retry.
+            if isinstance(error, str) and error.startswith("guardrail:"):
+                raise RuntimeError(error)
             print(f"WARNING: sb-cli evaluation failed: {error}")
             return None
 
