@@ -186,6 +186,7 @@ def build_results_table(project: str, entity: str | None = None) -> pd.DataFrame
             "avg_cost": r.get("avg_cost", np.nan),
             "avg_turns": r.get("avg_turns", np.nan),
             "eval_complete": r.get("eval_complete", False),
+            "hp_limit_min_tokens": int(r.get("hp_limit_min_tokens", 0) or 0),
         })
 
     return pd.DataFrame(rows)
@@ -233,24 +234,28 @@ def generate_latex_table(results: pd.DataFrame) -> str:
     def _latex_escape(text: str) -> str:
         return text.replace("_", r"\_")
 
+    # 5-tuple: (strategy, trigger, compaction, summarizer, min_tokens_filter)
+    # min_tokens_filter=None means "don't filter by threshold"
     order = [
-        ("raw", "baseline", "none", "same"),
-        ("observation_masking", "periodic", "masking", "same"),
-        ("observation_masking", "on_demand", "masking", "same"),
-        ("llm_summary", "periodic", "summary", "same"),
-        ("on_demand", "on_demand", "summary", "same"),
-        ("llm_summary", "periodic", "summary", "minimax-m2.1"),
-        ("on_demand", "on_demand", "summary", "minimax-m2.1"),
+        ("raw", "baseline", "none", "same", None),
+        ("observation_masking", "periodic", "masking", "same", None),
+        ("observation_masking", "on_demand", "masking", "same", None),
+        ("llm_summary", "periodic", "summary", "same", None),
+        ("on_demand", "on_demand", "summary", "same", 0),       # R4: L=170k (min_tokens=0 → fraction-driven)
+        ("on_demand", "on_demand", "summary", "same", 40000),   # B1: L=40k
+        ("llm_summary", "periodic", "summary", "minimax-m2.1", None),
+        ("on_demand", "on_demand", "summary", "minimax-m2.1", None),
     ]
 
     labels = {
-        ("raw", "baseline", "same"): "Raw (no compaction)",
-        ("observation_masking", "periodic", "same"): "Periodic masking",
-        ("observation_masking", "on_demand", "same"): "On-demand masking",
-        ("llm_summary", "periodic", "same"): "Periodic summary (self)",
-        ("llm_summary", "periodic", "minimax-m2.1"): "Periodic summary (minimax)",
-        ("on_demand", "on_demand", "same"): "On-demand summary (self)",
-        ("on_demand", "on_demand", "minimax-m2.1"): "On-demand summary (minimax)",
+        ("raw", "baseline", "same", None): "Raw (no compaction)",
+        ("observation_masking", "periodic", "same", None): "Periodic masking",
+        ("observation_masking", "on_demand", "same", None): "On-demand masking",
+        ("llm_summary", "periodic", "same", None): "Periodic summary (self)",
+        ("llm_summary", "periodic", "minimax-m2.1", None): "Periodic summary (minimax)",
+        ("on_demand", "on_demand", "same", 0): "On-demand summary (self, L=170k)",
+        ("on_demand", "on_demand", "same", 40000): "On-demand summary (self, L=40k)",
+        ("on_demand", "on_demand", "minimax-m2.1", None): "On-demand summary (minimax)",
     }
 
     raw_rows = results[results["strategy"] == "raw"]
@@ -260,7 +265,7 @@ def generate_latex_table(results: pd.DataFrame) -> str:
         r"\begin{table}[t]",
         r"\centering",
         r"\caption{Solve rates on SWE-bench Verified-Mini (50 instances; \texttt{verified-mini}) with GLM-4.7. "
-        r"On-demand compaction triggers only at 85\% context utilization.}",
+        r"On-demand compaction triggers at a token threshold $L$; we test $L$=170k (85\% of context) and $L$=40k.}",
         r"\label{tab:results}",
         r"\begin{tabular}{lcccc}",
         r"\toprule",
@@ -268,8 +273,8 @@ def generate_latex_table(results: pd.DataFrame) -> str:
         r"\midrule",
     ]
 
-    for strat, trigger, compaction, summarizer in order:
-        key = (strat, trigger, summarizer)
+    for strat, trigger, compaction, summarizer, min_tokens_filter in order:
+        key = (strat, trigger, summarizer, min_tokens_filter)
         label = labels.get(key, f"{strat} ({trigger})")
         trigger_cell = _latex_escape(trigger)
 
@@ -278,6 +283,8 @@ def generate_latex_table(results: pd.DataFrame) -> str:
             mask &= results["summarizer"] == summarizer
         else:
             mask &= results["summarizer"].isin(["same", "glm-4.7", ""])
+        if min_tokens_filter is not None and "hp_limit_min_tokens" in results.columns:
+            mask &= results["hp_limit_min_tokens"] == min_tokens_filter
 
         matching = results[mask]
         if matching.empty:
@@ -381,6 +388,11 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
     od_mask = results[
         (results["strategy"] == "observation_masking") & (results["trigger"] == "on_demand")
     ]
+    # when multiple thresholds exist, prefer the fraction-driven one (min_tokens=0 → L=170k)
+    if "hp_limit_min_tokens" in od_mask.columns and len(od_mask) > 1:
+        primary = od_mask[od_mask["hp_limit_min_tokens"] == 0]
+        if len(primary) > 0:
+            od_mask = primary
     if len(od_mask) > 0:
         pm_rate, pm_ci = (
             periodic_mask["solve_rate"].iloc[0],
@@ -399,6 +411,11 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
         (results["strategy"] == "on_demand") & (results["trigger"] == "on_demand")
         & (results["summarizer"].isin(["same", "glm-4.7", ""]))
     ]
+    # when multiple thresholds exist, prefer the fraction-driven one (min_tokens=0 → L=170k)
+    if "hp_limit_min_tokens" in od_sum_self.columns and len(od_sum_self) > 1:
+        primary = od_sum_self[od_sum_self["hp_limit_min_tokens"] == 0]
+        if len(primary) > 0:
+            od_sum_self = primary
 
     ps_rate, ps_ci = (
         periodic_sum_self["solve_rate"].iloc[0],
