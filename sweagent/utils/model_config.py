@@ -139,6 +139,7 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
     # GLM (Z.AI) - bypass cost limits, User-Agent for quota routing
     "glm-4.6": ModelPreset("anthropic/glm-4.6", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.6 (355B MoE, 32B active)", max_input_tokens=200000, max_output_tokens=131072, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
     "glm-4.7": ModelPreset("anthropic/glm-4.7", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.7 (agentic coding, thinking modes)", max_input_tokens=200000, max_output_tokens=131072, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
+    "glm-5": ModelPreset("anthropic/glm-5", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-5 (744B/40B MoE, 200K context, released Feb 2026)", max_input_tokens=200000, max_output_tokens=131072, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
     "glm-4.5-air": ModelPreset("anthropic/glm-4.5-air", api_base="https://api.z.ai/api/anthropic", api_key_var="ZHIPUAI_API_KEY", description="GLM-4.5 Air", max_input_tokens=128000, max_output_tokens=16384, extra_headers={"User-Agent": "claude-code/1.0"}, bypass_cost_limits=True),
 
     # MiniMax - bypass cost limits
@@ -260,6 +261,21 @@ CUSTOM_MODEL_PRICING: dict[str, dict] = {
     "glm-4.7": {
         "input_cost_per_token": 0.50 / 1_000_000,
         "output_cost_per_token": 2.20 / 1_000_000,
+        "max_tokens": 200000,
+        "litellm_provider": "anthropic",
+        "mode": "chat",
+    },
+    # glm-5: official pricing from docs.z.ai/guides/overview/pricing
+    "anthropic/glm-5": {
+        "input_cost_per_token": 1.00 / 1_000_000,
+        "output_cost_per_token": 3.20 / 1_000_000,
+        "max_tokens": 200000,
+        "litellm_provider": "anthropic",
+        "mode": "chat",
+    },
+    "glm-5": {
+        "input_cost_per_token": 1.00 / 1_000_000,
+        "output_cost_per_token": 3.20 / 1_000_000,
         "max_tokens": 200000,
         "litellm_provider": "anthropic",
         "mode": "chat",
