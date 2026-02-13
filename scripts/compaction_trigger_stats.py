@@ -13,15 +13,18 @@ Two data sources, selected via --source:
 Usage:
   python scripts/compaction_trigger_stats.py trajectories/<user>/<run_dir>
   python scripts/compaction_trigger_stats.py --source traj trajectories/<user>/<run_dir>
+  python scripts/compaction_trigger_stats.py --json trajectories/<user>/<run_dir>
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -121,10 +124,11 @@ def compute_run_stats_from_traj(run_dir: Path) -> list[InstanceStats]:
             st = s.get("statistics") or {}
             if not isinstance(st, dict):
                 continue
-            total_cost += st.get("cost", 0.0) or 0.0
+            total_cost += _safe_float(st.get("cost", 0.0), default=0.0)
             tok = st.get("tokens") or {}
             if isinstance(tok, dict):
-                total_tokens += (tok.get("raw_input", 0) or 0) + (tok.get("output", 0) or 0)
+                total_tokens += _safe_int(tok.get("raw_input", 0), default=0)
+                total_tokens += _safe_int(tok.get("output", 0), default=0)
 
         triggers_by_label: dict[str, int] = {}
         if n_compactions > 0:
@@ -164,6 +168,94 @@ def compute_run_stats(run_dir: Path, source: str = "auto") -> tuple[list[Instanc
     if source == "traj":
         return [], compute_run_stats_from_traj(run_dir)
     return compute_run_stats_from_log(run_dir), compute_run_stats_from_traj(run_dir)
+
+
+def _rate(numer: int, denom: int) -> float | None:
+    if denom <= 0:
+        return None
+    return numer / denom
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(parsed):
+        return default
+    return parsed
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+
+def summarize_run(run_dir: Path, source: str = "auto") -> dict[str, Any]:
+    """Return machine-readable run-level trigger and summary-call aggregates.
+
+    Notes:
+    - `log` section reports limit-aware trigger events from debug logs.
+    - `traj` section reports summary calls from `.traj` `summaries`.
+    """
+    log_stats, traj_stats = compute_run_stats(run_dir, source=source)
+
+    log_n = len(log_stats)
+    log_triggered_any = sum(1 for s in log_stats if s.triggers_any > 0)
+    log_total_triggers = sum(s.triggers_any for s in log_stats)
+    log_label_instances: Counter[str] = Counter()
+    log_label_triggers: Counter[str] = Counter()
+    for s in log_stats:
+        for label, n in s.triggers_by_label.items():
+            if n > 0:
+                log_label_instances[label] += 1
+                log_label_triggers[label] += n
+
+    traj_n = len(traj_stats)
+    traj_with_summaries = sum(1 for s in traj_stats if s.triggers_any > 0)
+    traj_total_summary_calls = sum(s.triggers_any for s in traj_stats)
+    traj_total_summary_cost = sum(s.summary_cost for s in traj_stats)
+    traj_total_summary_tokens = sum(s.summary_tokens for s in traj_stats)
+    active_traj = [s for s in traj_stats if s.turns > MIN_ACTIVE_TURNS]
+    active_n = len(active_traj)
+    active_total_summary_calls = sum(s.triggers_any for s in active_traj)
+    active_avg_summary_calls = (
+        active_total_summary_calls / active_n if active_n > 0 else None
+    )
+
+    return {
+        "run_dir": str(run_dir),
+        "run_name": run_dir.name,
+        "source": source,
+        "log": {
+            "n_instances": log_n,
+            "n_triggered_any": log_triggered_any,
+            "trigger_rate": _rate(log_triggered_any, log_n),
+            "n_never_triggered": log_n - log_triggered_any,
+            "total_triggers": log_total_triggers,
+            "instances_by_label": dict(log_label_instances),
+            "triggers_by_label": dict(log_label_triggers),
+        },
+        "traj": {
+            "n_instances": traj_n,
+            "n_with_summaries": traj_with_summaries,
+            "summary_rate": _rate(traj_with_summaries, traj_n),
+            "total_summary_calls": traj_total_summary_calls,
+            "avg_summary_calls_per_traj_instance": (
+                traj_total_summary_calls / traj_n if traj_n > 0 else None
+            ),
+            "total_summary_cost": traj_total_summary_cost,
+            "total_summary_tokens": traj_total_summary_tokens,
+            "n_active_instances": active_n,
+            "active_total_summary_calls": active_total_summary_calls,
+            "active_avg_summary_calls_per_instance": active_avg_summary_calls,
+        },
+    }
 
 
 def _print_log_report(stats: list[InstanceStats], run_dir: Path) -> None:
@@ -299,11 +391,18 @@ def main() -> int:
         default="auto",
         help="Data source: traj (.traj JSON), log (debug logs), auto (default)",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output machine-readable JSON summary",
+    )
     args = parser.parse_args()
 
     run_dir: Path = args.run_dir
     if not run_dir.exists():
         raise SystemExit(f"Run directory does not exist: {run_dir}")
+    if not run_dir.is_dir():
+        raise SystemExit(f"Run directory is not a directory: {run_dir}")
 
     log_stats, traj_stats = compute_run_stats(run_dir, source=args.source)
 
@@ -311,17 +410,26 @@ def main() -> int:
         if not traj_stats:
             print("No .traj files found.")
             return 1
-        _print_traj_report(traj_stats, run_dir)
+        if args.json:
+            print(json.dumps(summarize_run(run_dir, source="traj"), indent=2, sort_keys=True))
+        else:
+            _print_traj_report(traj_stats, run_dir)
     elif args.source == "log":
         if not log_stats:
             print("No debug logs found.")
             return 1
-        _print_log_report(log_stats, run_dir)
+        if args.json:
+            print(json.dumps(summarize_run(run_dir, source="log"), indent=2, sort_keys=True))
+        else:
+            _print_log_report(log_stats, run_dir)
     else:
         if not log_stats and not traj_stats:
             print("No debug logs or .traj files found.")
             return 1
-        _print_auto_report(log_stats, traj_stats, run_dir)
+        if args.json:
+            print(json.dumps(summarize_run(run_dir, source="auto"), indent=2, sort_keys=True))
+        else:
+            _print_auto_report(log_stats, traj_stats, run_dir)
 
     return 0
 

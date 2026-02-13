@@ -7,6 +7,7 @@ from scripts.compaction_trigger_stats import (
     compute_run_stats,
     compute_run_stats_from_log,
     compute_run_stats_from_traj,
+    summarize_run,
 )
 
 
@@ -186,3 +187,64 @@ def test_traj_turns_prefer_action_message_type(tmp_path: Path) -> None:
     stats = compute_run_stats_from_traj(run)
     assert len(stats) == 1
     assert stats[0].turns == 2
+
+
+def test_summarize_run_auto_includes_log_and_traj_sections(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    inst_log = _make_inst(run, "repo__task-log")
+    _write_debug_log(inst_log, [
+        "LastNObservations: triggering compaction",
+        "SummarizeEveryNTurns: triggering compaction",
+    ])
+
+    inst_traj = _make_inst(run, "repo__task-traj")
+    _write_traj(inst_traj, {
+        "summaries": [{"summary": "A"}, {"summary": "B"}],
+        "history": [{"role": "assistant", "message_type": "action"}] * 12,
+        "info": {"exit_status": "submitted"},
+    })
+
+    summary = summarize_run(run, source="auto")
+    assert summary["run_name"] == "run"
+    assert summary["log"]["n_instances"] == 1
+    assert summary["log"]["n_triggered_any"] == 1
+    assert summary["log"]["total_triggers"] == 2
+    assert summary["log"]["instances_by_label"] == {"masking": 1, "summary": 1}
+    assert summary["traj"]["n_instances"] == 1
+    assert summary["traj"]["n_with_summaries"] == 1
+    assert summary["traj"]["total_summary_calls"] == 2
+    assert summary["traj"]["n_active_instances"] == 1
+    assert summary["traj"]["active_total_summary_calls"] == 2
+
+
+def test_summarize_run_rates_are_none_when_denominator_zero(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    inst = _make_inst(run, "repo__task-1")
+    _write_debug_log(inst, ["no compaction"])
+
+    summary = summarize_run(run, source="log")
+    assert summary["log"]["trigger_rate"] == 0.0
+    assert summary["traj"]["summary_rate"] is None
+    assert summary["traj"]["avg_summary_calls_per_traj_instance"] is None
+
+
+def test_traj_coerces_string_numeric_fields(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    inst = _make_inst(run, "repo__task-1")
+    _write_traj(inst, {
+        "summaries": [
+            {
+                "statistics": {
+                    "cost": "0.5",
+                    "tokens": {"raw_input": "10", "output": "2"},
+                }
+            }
+        ],
+        "history": [],
+        "info": {},
+    })
+
+    stats = compute_run_stats_from_traj(run)
+    assert len(stats) == 1
+    assert abs(stats[0].summary_cost - 0.5) < 1e-9
+    assert stats[0].summary_tokens == 12
