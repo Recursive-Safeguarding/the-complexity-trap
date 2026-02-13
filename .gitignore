@@ -6,6 +6,7 @@ keys.yaml
 .swe-agent-human-history
 .vscode/**
 cov.xml
+artifacts/
 trajectories/**
 !trajectories/demonstrations/**
 data/**
