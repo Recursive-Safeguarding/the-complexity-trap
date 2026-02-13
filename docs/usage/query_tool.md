@@ -115,6 +115,39 @@ python scripts/query.py --model glm-4.7 --eval-only runs
 python scripts/query.py --min-instances 50 runs      # Runs with 50+ instances
 ```
 
+## Repeated-Run Uncertainty
+
+Use `scripts/repeated_run_stats.py` when you have independent reruns of the
+same configuration and want uncertainty across runs (not just within one run).
+
+```bash
+# Default: verified-mini, evaluated runs only, n_instances in [40, 60], min 2 repeats
+python scripts/repeated_run_stats.py
+
+# Focus on one model/strategy
+python scripts/repeated_run_stats.py --model glm-4.7 --strategy on_demand
+
+# Include run names and export markdown
+python scripts/repeated_run_stats.py --show-runs --format markdown --output /tmp/repeated_runs.md
+```
+
+What it reports per strict config group:
+- `mean_rate`: mean solve rate across reruns
+- `t_ci_95`: 95% t-interval across run-level solve rates
+- `std_pp`: sample standard deviation (percentage points) across reruns
+- `pooled_rate` and `pooled_wilson_95`: pooled instance-level reference
+
+Strict grouping key:
+- `model`, `strategy`, `summarizer`, `instances_subset`
+- `hp_obs_n`, `hp_sum_n`, `hp_sum_keep_m`
+- `hp_limit_aware`, `hp_limit_fraction`, `hp_limit_min_tokens`
+
+Interpretation:
+- `paper_results.py` Wilson intervals quantify uncertainty for **one run**
+  (`k/n` over instances).
+- `repeated_run_stats.py` t-intervals quantify uncertainty **across reruns**
+  (run-to-run variation).
+
 ## Global Options
 
 All options must come **before** the subcommand:
