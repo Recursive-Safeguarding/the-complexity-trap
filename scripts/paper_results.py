@@ -38,6 +38,7 @@ load_dotenv()
 
 sys.path.insert(0, str(Path(__file__).parent))
 from dashboard_shared import fetch_runs, dedupe_latest_runs, PHASE3_PERIODIC
+from compaction_trigger_stats import compute_run_stats_from_traj
 
 
 def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -65,7 +66,66 @@ def classify_trigger(row: pd.Series) -> str:
     return "periodic"
 
 
-def build_results_table(project: str, entity: str | None = None) -> pd.DataFrame:
+def _warn(msg: str) -> None:
+    print(f"WARNING: {msg}", file=sys.stderr)
+
+
+def _resolve_run_dir(trajectories_dir: Path, run_name: str) -> tuple[Path | None, str | None]:
+    """Resolve a WandB run name to a trajectory directory.
+
+    Search order:
+      1) trajectories/<run_name>
+      2) trajectories/<owner>/<run_name>
+    """
+    if not run_name:
+        return None, "run_name is empty"
+    if not trajectories_dir.exists():
+        return None, f"trajectories dir does not exist: {trajectories_dir}"
+    if not trajectories_dir.is_dir():
+        return None, f"trajectories dir is not a directory: {trajectories_dir}"
+
+    candidates: list[Path] = []
+    direct = trajectories_dir / run_name
+    if direct.is_dir():
+        candidates.append(direct)
+    for owner_dir in sorted(p for p in trajectories_dir.iterdir() if p.is_dir()):
+        candidate = owner_dir / run_name
+        if candidate.is_dir():
+            candidates.append(candidate)
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for p in candidates:
+        key = str(p.resolve())
+        if key not in seen:
+            seen.add(key)
+            deduped.append(p)
+
+    if not deduped:
+        return None, f"trajectory dir not found for run_name={run_name}"
+    if len(deduped) == 1:
+        return deduped[0], None
+
+    chosen = sorted(deduped, key=lambda p: (p.stat().st_mtime, str(p)))[-1]
+    choices = ", ".join(str(p) for p in deduped)
+    return chosen, f"multiple trajectory dirs for run_name={run_name}; using {chosen} among [{choices}]"
+
+
+def _summary_call_stats_from_traj(run_dir: Path) -> tuple[float, float]:
+    """Return (avg_summary_calls, summary_trigger_rate) from local .traj files."""
+    stats = compute_run_stats_from_traj(run_dir)
+    if not stats:
+        return 0.0, 0.0
+    total = sum(s.triggers_any for s in stats)
+    n_triggered = sum(1 for s in stats if s.triggers_any > 0)
+    return total / len(stats), n_triggered / len(stats)
+
+
+def build_results_table(
+    project: str,
+    entity: str | None = None,
+    trajectories_dir: Path | None = None,
+) -> pd.DataFrame:
     df = fetch_runs(project, entity)
 
     # filter to GLM-4.7 verified-mini 50-task runs (exclude full 500)
@@ -165,12 +225,32 @@ def build_results_table(project: str, entity: str | None = None) -> pd.DataFrame
         .drop(columns=["_created_at_ts"])
     )
 
+    valid_trajectories_dir = trajectories_dir
+    if valid_trajectories_dir is not None:
+        if not valid_trajectories_dir.exists():
+            _warn(f"--trajectories-dir does not exist: {valid_trajectories_dir}; skipping summary-call augmentation")
+            valid_trajectories_dir = None
+        elif not valid_trajectories_dir.is_dir():
+            _warn(f"--trajectories-dir is not a directory: {valid_trajectories_dir}; skipping summary-call augmentation")
+            valid_trajectories_dir = None
+
     rows = []
     for _, r in df.iterrows():
         n = int(r["n_instances"])
         k = int(r["n_resolved"])
         lo, hi = wilson_ci(k, n)
         rate = k / n if n > 0 else 0.0
+
+        avg_summary_calls = np.nan
+        summary_trigger_rate = np.nan
+
+        if valid_trajectories_dir is not None and r["compaction"] == "summary":
+            run_dir, warning = _resolve_run_dir(valid_trajectories_dir, r["run_name"])
+            if warning:
+                _warn(warning)
+            if run_dir is not None:
+                avg_summary_calls, summary_trigger_rate = _summary_call_stats_from_traj(run_dir)
+
         rows.append({
             "run_name": r["run_name"],
             "strategy": r["strategy"],
@@ -187,6 +267,8 @@ def build_results_table(project: str, entity: str | None = None) -> pd.DataFrame
             "avg_turns": r.get("avg_turns", np.nan),
             "eval_complete": r.get("eval_complete", False),
             "hp_limit_min_tokens": int(r.get("hp_limit_min_tokens", 0) or 0),
+            "avg_summary_calls": avg_summary_calls,
+            "summary_trigger_rate": summary_trigger_rate,
         })
 
     return pd.DataFrame(rows)
@@ -196,9 +278,17 @@ def format_terminal_table(results: pd.DataFrame) -> str:
     if results.empty:
         return "No results available."
 
+    has_summary_calls = (
+        "avg_summary_calls" in results.columns
+        and results.loc[results["compaction"] == "summary", "avg_summary_calls"].notna().any()
+    )
+
     lines = []
-    lines.append(f"{'Config':<35} {'Trigger':<12} {'Rate':>8} {'CI':>12} {'n':>5} {'Cost':>7}")
-    lines.append("-" * 85)
+    header = f"{'Config':<35} {'Trigger':<12} {'Rate':>8} {'CI':>12} {'n':>5} {'Cost':>7}"
+    if has_summary_calls:
+        header += f" {'SumCalls':>8}"
+    lines.append(header)
+    lines.append("-" * (85 + (9 if has_summary_calls else 0)))
 
     for _, r in results.sort_values("solve_rate", ascending=False).iterrows():
         label = r["strategy"]
@@ -210,10 +300,17 @@ def format_terminal_table(results: pd.DataFrame) -> str:
         cost_str = f"${r['avg_cost']:.2f}" if pd.notna(r["avg_cost"]) else "N/A"
         eval_mark = "" if r["eval_complete"] else " *"
 
-        lines.append(
+        line = (
             f"{label:<35} {r['trigger']:<12} {rate_str:>8} {ci_str:>12} "
             f"{r['n']:>5} {cost_str:>7}{eval_mark}"
         )
+        if has_summary_calls:
+            val = r.get("avg_summary_calls", np.nan)
+            if r["compaction"] == "summary" and pd.notna(val):
+                line += f" {float(val):>8.1f}"
+            else:
+                line += f" {'--':>8}"
+        lines.append(line)
 
     lines.append("")
     lines.append("* = not yet evaluated (solve rate from WandB submission data)")
@@ -261,17 +358,39 @@ def generate_latex_table(results: pd.DataFrame) -> str:
     raw_rows = results[results["strategy"] == "raw"]
     raw_rate = raw_rows["solve_rate"].iloc[0] if len(raw_rows) > 0 else 0.64
 
+    has_summary_calls = (
+        "avg_summary_calls" in results.columns
+        and results.loc[results["compaction"] == "summary", "avg_summary_calls"].notna().any()
+    )
+
+    if has_summary_calls:
+        col_spec = "lccccc"
+        header_row = r"Configuration & Trigger & Solved & Rate (\%) & $\Delta$ vs Raw & Summary Calls \\"
+    else:
+        col_spec = "lcccc"
+        header_row = r"Configuration & Trigger & Solved & Rate (\%) & $\Delta$ vs Raw \\"
+
+    caption = (
+        r"Solve rates on SWE-bench Verified-Mini (50 instances; \texttt{verified-mini}) with GLM-4.7. "
+        r"On-demand compaction triggers at a token threshold $L$; we test $L$=170k (85\% of context) and $L$=40k."
+    )
+    if has_summary_calls:
+        caption += (
+            r" Summary Calls are computed from local trajectory \texttt{summaries} and apply only to summary-based methods."
+        )
+
     lines = [
         r"\begin{table}[t]",
         r"\centering",
-        r"\caption{Solve rates on SWE-bench Verified-Mini (50 instances; \texttt{verified-mini}) with GLM-4.7. "
-        r"On-demand compaction triggers at a token threshold $L$; we test $L$=170k (85\% of context) and $L$=40k.}",
+        rf"\caption{{{caption}}}",
         r"\label{tab:results}",
-        r"\begin{tabular}{lcccc}",
+        rf"\begin{{tabular}}{{{col_spec}}}",
         r"\toprule",
-        r"Configuration & Trigger & Solved & Rate (\%) & $\Delta$ vs Raw \\",
+        header_row,
         r"\midrule",
     ]
+
+    summary_calls_suffix = " & --" if has_summary_calls else ""
 
     for strat, trigger, compaction, summarizer, min_tokens_filter in order:
         key = (strat, trigger, summarizer, min_tokens_filter)
@@ -310,14 +429,15 @@ def generate_latex_table(results: pd.DataFrame) -> str:
                     n_k = f"{k}/{n}"
                     if strat == "raw":
                         lines.append(
-                            f"  {label} & -- & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & -- \\\\"
+                            f"  {label} & -- & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & --{summary_calls_suffix} \\\\"
                         )
                     else:
                         lines.append(
-                            f"  {label} & {trigger_cell} & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & {delta_str} \\\\"
+                            f"  {label} & {trigger_cell} & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & {delta_str}{summary_calls_suffix} \\\\"
                         )
                     continue
-            lines.append(f"  {label} & {trigger_cell} & \\textit{{pending}} & -- & -- \\\\")
+            pending_suffix = " & --" if has_summary_calls else ""
+            lines.append(f"  {label} & {trigger_cell} & \\textit{{pending}} & -- & --{pending_suffix} \\\\")
             continue
 
         r = matching.iloc[0]
@@ -327,13 +447,21 @@ def generate_latex_table(results: pd.DataFrame) -> str:
         delta_str = _pct(delta, signed=True)
         n_k = f"{int(r['k'])}/{int(r['n'])}"
 
+        summary_calls_cell = ""
+        if has_summary_calls:
+            val = r.get("avg_summary_calls", np.nan)
+            if r["compaction"] == "summary" and pd.notna(val):
+                summary_calls_cell = f" & {float(val):.1f}"
+            else:
+                summary_calls_cell = " & --"
+
         if strat == "raw":
             lines.append(
-                f"  {label} & -- & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & -- \\\\"
+                f"  {label} & -- & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & --{summary_calls_cell} \\\\"
             )
         else:
             lines.append(
-                f"  {label} & {trigger_cell} & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & {delta_str} \\\\"
+                f"  {label} & {trigger_cell} & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & {delta_str}{summary_calls_cell} \\\\"
             )
 
     lines.extend([
@@ -783,6 +911,11 @@ def main():
     parser.add_argument("--figure", type=str, help="Output figure to path (e.g., figure1.pdf)")
     parser.add_argument("--token-histogram", type=str, help="Output token usage histogram to path (e.g., token_hist.pdf)")
     parser.add_argument("--turns-histogram", type=str, help="Output turns distribution histogram to path (e.g., turns_hist.pdf)")
+    parser.add_argument(
+        "--trajectories-dir",
+        type=str,
+        help="Path to trajectories dir for local summary-call stats",
+    )
     parser.add_argument("--no-fetch", action="store_true", help="Use hardcoded baselines only (no WandB)")
     parser.add_argument("--quiet", action="store_true", help="Suppress terminal table output")
     args = parser.parse_args()
@@ -819,7 +952,8 @@ def main():
             })
         results = pd.DataFrame(rows)
     else:
-        results = build_results_table(args.project, args.entity)
+        traj_dir = Path(args.trajectories_dir) if args.trajectories_dir else None
+        results = build_results_table(args.project, args.entity, trajectories_dir=traj_dir)
 
     if results.empty:
         print("No results. Run with --no-fetch to use hardcoded baselines.")
