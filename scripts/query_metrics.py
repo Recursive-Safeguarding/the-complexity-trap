@@ -60,11 +60,24 @@ def aggregate_by_model_strategy(df: pd.DataFrame) -> pd.DataFrame:
         else:
             weighted_cost = np.nan
 
+        # weighted avg compactions (if column exists)
+        if "avg_compactions" in group.columns:
+            valid_comp = group[group["avg_compactions"].notna() & (group["n_instances"] > 0)]
+            if len(valid_comp) > 0:
+                avg_compactions = (
+                    valid_comp["avg_compactions"] * valid_comp["n_instances"]
+                ).sum() / valid_comp["n_instances"].sum()
+            else:
+                avg_compactions = np.nan
+        else:
+            avg_compactions = np.nan
+
         rows.append({
             "model": model,
             "strategy": strategy,
             "solve_rate": n_resolved / n_total if n_total > 0 else 0,
             "avg_cost": weighted_cost,
+            "avg_compactions": avg_compactions,
             "n_instances": n_total,
             "n_resolved": n_resolved,
         })
@@ -331,6 +344,7 @@ def compute_strategy_comparison(
                     "rate_vs_raw": "—" if row["strategy"] == "raw" else f"{rate_delta:+.1%}",
                     "avg_cost": row["avg_cost"],
                     "cost_vs_raw": "—" if row["strategy"] == "raw" else f"{cost_delta:+.0f}%",
+                    "avg_compactions": row.get("avg_compactions", np.nan),
                     "n_instances": row["n_instances"],
                 }
             )
@@ -377,6 +391,7 @@ def compute_strategy_comparison(
             "rate_vs_raw",
             "avg_cost",
             "cost_vs_raw",
+            "avg_compactions",
             "n_instances",
         ],
     )

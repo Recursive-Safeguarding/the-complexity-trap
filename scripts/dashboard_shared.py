@@ -316,6 +316,13 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
         if n_instances and exit_total < n_instances:
             exit_other += (n_instances - exit_total)
 
+        total_summary_api_calls = _safe_float(_get("total_summary_api_calls"))
+        avg_compactions = (
+            total_summary_api_calls / n_instances
+            if n_instances > 0 and pd.notna(total_summary_api_calls)
+            else np.nan
+        )
+
         record = {
             "run_id": r.id,
             "run_name": r.name,
@@ -361,6 +368,8 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
             "total_agent_cost": _safe_float(_get("total_agent_cost")),
             "total_summary_cost": _safe_float(_get("total_summary_cost")),
             "summary_cost_fraction": _safe_float(_get("summary_cost_fraction"), default=0.0),
+            "total_summary_api_calls": total_summary_api_calls,
+            "avg_compactions": avg_compactions,
         }
         records.append(record)
 
