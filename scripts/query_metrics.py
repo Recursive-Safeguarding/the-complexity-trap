@@ -75,7 +75,7 @@ def aggregate_by_model_strategy(df: pd.DataFrame) -> pd.DataFrame:
         rows.append({
             "model": model,
             "strategy": strategy,
-            "solve_rate": n_resolved / n_total if n_total > 0 else 0,
+            "solve_rate": n_resolved / n_total if n_total > 0 else np.nan,
             "avg_cost": weighted_cost,
             "avg_compactions": avg_compactions,
             "n_instances": n_total,
@@ -96,9 +96,17 @@ def compute_summary(df: pd.DataFrame) -> QueryResult:
             columns=[],
         )
 
-    # find best by solve rate
-    best_idx = agg["solve_rate"].idxmax()
-    best = agg.loc[best_idx]
+    # find best by solve rate (ignore unknown denominators)
+    valid = agg[agg["solve_rate"].notna()]
+    if valid.empty:
+        return QueryResult(
+            data=pd.DataFrame(),
+            title="Summary",
+            insights=["No runs with valid instance denominators."],
+            columns=[],
+        )
+    best_idx = valid["solve_rate"].idxmax()
+    best = valid.loc[best_idx]
 
     # paper comparison
     baseline = find_paper_baseline(best["model"], best["strategy"])
@@ -329,21 +337,29 @@ def compute_strategy_comparison(
             raw_cost = model_data.iloc[0]["avg_cost"]
 
         for _, row in model_data.iterrows():
-            rate_delta = row["solve_rate"] - raw_rate if raw_rate is not None else 0
-            cost_delta = (
-                ((row["avg_cost"] - raw_cost) / raw_cost * 100)
-                if raw_cost is not None and raw_cost > 0
-                else 0
-            )
+            rate_vs_raw = "—"
+            if row["strategy"] != "raw" and pd.notna(raw_rate) and pd.notna(row["solve_rate"]):
+                rate_delta = row["solve_rate"] - raw_rate
+                rate_vs_raw = f"{rate_delta:+.1%}"
+
+            cost_vs_raw = "—"
+            if (
+                row["strategy"] != "raw"
+                and pd.notna(raw_cost)
+                and pd.notna(row["avg_cost"])
+                and raw_cost > 0
+            ):
+                cost_delta = ((row["avg_cost"] - raw_cost) / raw_cost) * 100
+                cost_vs_raw = f"{cost_delta:+.0f}%"
 
             rows.append(
                 {
                     "model": row["model"],
                     "strategy": row["strategy"],
                     "solve_rate": row["solve_rate"],
-                    "rate_vs_raw": "—" if row["strategy"] == "raw" else f"{rate_delta:+.1%}",
+                    "rate_vs_raw": rate_vs_raw,
                     "avg_cost": row["avg_cost"],
-                    "cost_vs_raw": "—" if row["strategy"] == "raw" else f"{cost_delta:+.0f}%",
+                    "cost_vs_raw": cost_vs_raw,
                     "avg_compactions": row.get("avg_compactions", np.nan),
                     "n_instances": row["n_instances"],
                 }
@@ -366,19 +382,19 @@ def compute_strategy_comparison(
         # check if context management helps or hurts
         non_raw = result_df[result_df["strategy"] != "raw"]
         if len(non_raw) > 0:
-            avg_delta = non_raw["rate_vs_raw"].apply(
+            valid_deltas = non_raw[non_raw["rate_vs_raw"] != "—"]["rate_vs_raw"]
+            avg_delta = valid_deltas.apply(
                 lambda x: float(x.replace("%", "").replace("+", "")) / 100
-                if x != "—"
-                else 0
             ).mean()
-            if avg_delta < -0.02:
-                insights.append(
-                    "⚠️ Context management strategies HURT performance (opposite of paper)"
-                )
-            elif avg_delta > 0.02:
-                insights.append(
-                    "✅ Context management strategies HELP performance (matches paper)"
-                )
+            if pd.notna(avg_delta):
+                if avg_delta < -0.02:
+                    insights.append(
+                        "⚠️ Context management strategies HURT performance (opposite of paper)"
+                    )
+                elif avg_delta > 0.02:
+                    insights.append(
+                        "✅ Context management strategies HELP performance (matches paper)"
+                    )
 
     return QueryResult(
         data=result_df,

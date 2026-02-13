@@ -26,6 +26,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 from pathlib import Path
@@ -55,7 +56,7 @@ def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
 def classify_trigger(row: pd.Series) -> str:
     """Classify a run as periodic or on-demand based on strategy + hyperparams."""
     strategy = row.get("strategy", "")
-    limit_aware = row.get("hp_limit_aware", False)
+    limit_aware = _boollike(row.get("hp_limit_aware", False))
 
     if strategy == "raw":
         return "baseline"
@@ -68,6 +69,69 @@ def classify_trigger(row: pd.Series) -> str:
 
 def _warn(msg: str) -> None:
     print(f"WARNING: {msg}", file=sys.stderr)
+
+
+def _boollike(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return False
+        return bool(value)
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "t")
+
+
+def _floatlike(value: object) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return parsed
+
+
+def _intlike(value: object) -> int | None:
+    parsed = _floatlike(value)
+    if parsed is None:
+        return None
+    return int(parsed)
+
+
+def _pick_preferred_row(
+    rows: pd.DataFrame,
+    *,
+    prefer_min_tokens: int | None = None,
+) -> pd.Series:
+    """Pick one row deterministically, preferring explicit budget if requested."""
+    if rows.empty:
+        raise ValueError("cannot pick from empty rows")
+
+    work = rows.copy()
+
+    if prefer_min_tokens is not None and "hp_limit_min_tokens" in work.columns:
+        min_tokens = work["hp_limit_min_tokens"].apply(_intlike)
+        preferred = work[min_tokens == prefer_min_tokens]
+        if not preferred.empty:
+            work = preferred
+
+    if "created_at" in work.columns:
+        work["_created_at_ts"] = pd.to_datetime(work["created_at"], errors="coerce")
+    else:
+        work["_created_at_ts"] = pd.NaT
+
+    if "run_name" not in work.columns:
+        work["run_name"] = ""
+
+    # Newest timestamp first; run_name is a deterministic tie-breaker.
+    ordered = work.sort_values(
+        by=["_created_at_ts", "run_name"],
+        ascending=[False, False],
+        na_position="last",
+    )
+    return ordered.iloc[0]
 
 
 def _resolve_run_dir(trajectories_dir: Path, run_name: str) -> tuple[Path | None, str | None]:
@@ -83,14 +147,20 @@ def _resolve_run_dir(trajectories_dir: Path, run_name: str) -> tuple[Path | None
         return None, f"trajectories dir does not exist: {trajectories_dir}"
     if not trajectories_dir.is_dir():
         return None, f"trajectories dir is not a directory: {trajectories_dir}"
+    run_path = Path(run_name)
+    if run_path.is_absolute():
+        return None, f"run_name must be relative, got absolute path: {run_name}"
+    if ".." in run_path.parts:
+        return None, f"run_name contains parent traversal: {run_name}"
 
+    root_resolved = trajectories_dir.resolve()
     candidates: list[Path] = []
-    direct = trajectories_dir / run_name
-    if direct.is_dir():
+    direct = trajectories_dir / run_path
+    if direct.is_dir() and (root_resolved == direct.resolve() or root_resolved in direct.resolve().parents):
         candidates.append(direct)
     for owner_dir in sorted(p for p in trajectories_dir.iterdir() if p.is_dir()):
-        candidate = owner_dir / run_name
-        if candidate.is_dir():
+        candidate = owner_dir / run_path
+        if candidate.is_dir() and (root_resolved == candidate.resolve() or root_resolved in candidate.resolve().parents):
             candidates.append(candidate)
 
     deduped: list[Path] = []
@@ -266,7 +336,7 @@ def build_results_table(
             "avg_cost": r.get("avg_cost", np.nan),
             "avg_turns": r.get("avg_turns", np.nan),
             "eval_complete": r.get("eval_complete", False),
-            "hp_limit_min_tokens": int(r.get("hp_limit_min_tokens", 0) or 0),
+            "hp_limit_min_tokens": _intlike(r.get("hp_limit_min_tokens", 0)) or 0,
             "avg_summary_calls": avg_summary_calls,
             "summary_trigger_rate": summary_trigger_rate,
         })
@@ -356,7 +426,28 @@ def generate_latex_table(results: pd.DataFrame) -> str:
     }
 
     raw_rows = results[results["strategy"] == "raw"]
-    raw_rate = raw_rows["solve_rate"].iloc[0] if len(raw_rows) > 0 else 0.64
+    raw_rate = _pick_preferred_row(raw_rows)["solve_rate"] if len(raw_rows) > 0 else 0.64
+
+    has_summary_calls = (
+        "avg_summary_calls" in results.columns
+        and results.loc[results["compaction"] == "summary", "avg_summary_calls"].notna().any()
+    )
+
+    if has_summary_calls:
+        col_spec = "lccccc"
+        header_row = r"Configuration & Trigger & Solved & Rate (\%) & $\Delta$ vs Raw & Summary Calls \\"
+    else:
+        col_spec = "lcccc"
+        header_row = r"Configuration & Trigger & Solved & Rate (\%) & $\Delta$ vs Raw \\"
+
+    caption = (
+        r"Solve rates on SWE-bench Verified-Mini (50 instances; \texttt{verified-mini}) with GLM-4.7. "
+        r"On-demand compaction triggers at a token threshold $L$; we test $L$=170k (85\% of context) and $L$=40k."
+    )
+    if has_summary_calls:
+        caption += (
+            r" Summary Calls are computed from local trajectory \texttt{summaries} and apply only to summary-based methods."
+        )
 
     has_summary_calls = (
         "avg_summary_calls" in results.columns
@@ -403,7 +494,8 @@ def generate_latex_table(results: pd.DataFrame) -> str:
         else:
             mask &= results["summarizer"].isin(["same", "glm-4.7", ""])
         if min_tokens_filter is not None and "hp_limit_min_tokens" in results.columns:
-            mask &= results["hp_limit_min_tokens"] == min_tokens_filter
+            min_tokens = results["hp_limit_min_tokens"].apply(_intlike)
+            mask &= min_tokens == min_tokens_filter
 
         matching = results[mask]
         if matching.empty:
@@ -440,7 +532,7 @@ def generate_latex_table(results: pd.DataFrame) -> str:
             lines.append(f"  {label} & {trigger_cell} & \\textit{{pending}} & -- & --{pending_suffix} \\\\")
             continue
 
-        r = matching.iloc[0]
+        r = _pick_preferred_row(matching, prefer_min_tokens=min_tokens_filter)
         rate = r["solve_rate"]
         ci = r["ci_half"]
         delta = rate - raw_rate
@@ -503,8 +595,8 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
 
     raw_rows = results[results["strategy"] == "raw"]
     raw_rate, raw_ci = (
-        raw_rows["solve_rate"].iloc[0],
-        raw_rows["ci_half"].iloc[0],
+        _pick_preferred_row(raw_rows)["solve_rate"],
+        _pick_preferred_row(raw_rows)["ci_half"],
     ) if len(raw_rows) > 0 else _p3_rate_ci("raw", 0.64, 0.068)
 
     # Masking: include only if we have an on-demand masking result (to keep the
@@ -518,16 +610,19 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
     ]
     # when multiple thresholds exist, prefer the fraction-driven one (min_tokens=0 → L=170k)
     if "hp_limit_min_tokens" in od_mask.columns and len(od_mask) > 1:
-        primary = od_mask[od_mask["hp_limit_min_tokens"] == 0]
+        min_tokens = od_mask["hp_limit_min_tokens"].apply(_intlike)
+        primary = od_mask[min_tokens == 0]
         if len(primary) > 0:
             od_mask = primary
     if len(od_mask) > 0:
-        pm_rate, pm_ci = (
-            periodic_mask["solve_rate"].iloc[0],
-            periodic_mask["ci_half"].iloc[0],
-        ) if len(periodic_mask) > 0 else _p3_rate_ci("masking", 0.62, 0.070)
-        odm_rate = od_mask["solve_rate"].iloc[0]
-        odm_ci = od_mask["ci_half"].iloc[0]
+        if len(periodic_mask) > 0:
+            periodic_mask_row = _pick_preferred_row(periodic_mask)
+            pm_rate, pm_ci = periodic_mask_row["solve_rate"], periodic_mask_row["ci_half"]
+        else:
+            pm_rate, pm_ci = _p3_rate_ci("masking", 0.62, 0.070)
+        od_mask_row = _pick_preferred_row(od_mask, prefer_min_tokens=0)
+        odm_rate = od_mask_row["solve_rate"]
+        odm_ci = od_mask_row["ci_half"]
         categories.append(("Masking", pm_rate, pm_ci, odm_rate, odm_ci))
 
     # summary (self)
@@ -541,16 +636,23 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
     ]
     # when multiple thresholds exist, prefer the fraction-driven one (min_tokens=0 → L=170k)
     if "hp_limit_min_tokens" in od_sum_self.columns and len(od_sum_self) > 1:
-        primary = od_sum_self[od_sum_self["hp_limit_min_tokens"] == 0]
+        min_tokens = od_sum_self["hp_limit_min_tokens"].apply(_intlike)
+        primary = od_sum_self[min_tokens == 0]
         if len(primary) > 0:
             od_sum_self = primary
 
-    ps_rate, ps_ci = (
-        periodic_sum_self["solve_rate"].iloc[0],
-        periodic_sum_self["ci_half"].iloc[0],
-    ) if len(periodic_sum_self) > 0 else _p3_rate_ci("summary_self", 0.56, 0.133)
-    ods_rate = od_sum_self["solve_rate"].iloc[0] if len(od_sum_self) > 0 else None
-    ods_ci = od_sum_self["ci_half"].iloc[0] if len(od_sum_self) > 0 else None
+    if len(periodic_sum_self) > 0:
+        periodic_sum_self_row = _pick_preferred_row(periodic_sum_self)
+        ps_rate, ps_ci = periodic_sum_self_row["solve_rate"], periodic_sum_self_row["ci_half"]
+    else:
+        ps_rate, ps_ci = _p3_rate_ci("summary_self", 0.56, 0.133)
+    if len(od_sum_self) > 0:
+        od_sum_self_row = _pick_preferred_row(od_sum_self, prefer_min_tokens=0)
+        ods_rate = od_sum_self_row["solve_rate"]
+        ods_ci = od_sum_self_row["ci_half"]
+    else:
+        ods_rate = None
+        ods_ci = None
 
     categories.append(("Summary\n(self)", ps_rate, ps_ci, ods_rate, ods_ci))
 
@@ -564,12 +666,18 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
         & (results["summarizer"] == "minimax-m2.1")
     ]
 
-    pmm_rate, pmm_ci = (
-        periodic_sum_mm["solve_rate"].iloc[0],
-        periodic_sum_mm["ci_half"].iloc[0],
-    ) if len(periodic_sum_mm) > 0 else _p3_rate_ci("summary_minimax", 0.54, 0.133)
-    odmm_rate = od_sum_mm["solve_rate"].iloc[0] if len(od_sum_mm) > 0 else None
-    odmm_ci = od_sum_mm["ci_half"].iloc[0] if len(od_sum_mm) > 0 else None
+    if len(periodic_sum_mm) > 0:
+        periodic_sum_mm_row = _pick_preferred_row(periodic_sum_mm)
+        pmm_rate, pmm_ci = periodic_sum_mm_row["solve_rate"], periodic_sum_mm_row["ci_half"]
+    else:
+        pmm_rate, pmm_ci = _p3_rate_ci("summary_minimax", 0.54, 0.133)
+    if len(od_sum_mm) > 0:
+        od_sum_mm_row = _pick_preferred_row(od_sum_mm)
+        odmm_rate = od_sum_mm_row["solve_rate"]
+        odmm_ci = od_sum_mm_row["ci_half"]
+    else:
+        odmm_rate = None
+        odmm_ci = None
 
     categories.append(("Summary\n(minimax)", pmm_rate, pmm_ci, odmm_rate, odmm_ci))
 

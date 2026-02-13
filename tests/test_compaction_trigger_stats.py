@@ -248,3 +248,34 @@ def test_traj_coerces_string_numeric_fields(tmp_path: Path) -> None:
     assert len(stats) == 1
     assert abs(stats[0].summary_cost - 0.5) < 1e-9
     assert stats[0].summary_tokens == 12
+
+
+def test_traj_handles_truthy_non_dict_info(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    inst = _make_inst(run, "repo__task-1")
+    _write_traj(inst, {
+        "summaries": [],
+        "history": [],
+        "info": ["not-a-dict"],
+    })
+
+    stats = compute_run_stats_from_traj(run)
+    assert len(stats) == 1
+    assert stats[0].exit_status == ""
+
+
+def test_traj_handles_infinite_token_values(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    inst = _make_inst(run, "repo__task-1")
+    _write_traj(inst, {
+        "summaries": [
+            {"statistics": {"cost": 0.1, "tokens": {"raw_input": "inf", "output": "1"}}}
+        ],
+        "history": [],
+        "info": {},
+    })
+
+    stats = compute_run_stats_from_traj(run)
+    assert len(stats) == 1
+    # "inf" should be treated as invalid and fall back to default 0.
+    assert stats[0].summary_tokens == 1

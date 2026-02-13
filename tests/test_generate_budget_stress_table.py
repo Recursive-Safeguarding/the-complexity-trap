@@ -70,6 +70,15 @@ def test_trigger_rate_uses_traj_for_periodic_summary() -> None:
     assert trigger_rate_from_summary(row, summary) == "44.0%"
 
 
+def test_trigger_rate_treats_string_false_as_false() -> None:
+    row = pd.Series({"strategy": "observation_masking", "hp_limit_aware": "False"})
+    summary = {
+        "log": {"trigger_rate": 0.8},
+        "traj": {"summary_rate": None},
+    }
+    assert trigger_rate_from_summary(row, summary) == "N/A"
+
+
 def test_trigger_rate_returns_na_when_unavailable() -> None:
     row = pd.Series({"strategy": "observation_masking", "hp_limit_aware": False})
     summary = {
@@ -77,6 +86,11 @@ def test_trigger_rate_returns_na_when_unavailable() -> None:
         "traj": {"summary_rate": None},
     }
     assert trigger_rate_from_summary(row, summary) == "N/A"
+
+
+def test_safe_int_handles_infinite_values() -> None:
+    assert budget_table._safe_int(float("inf")) is None
+    assert budget_table._safe_int("-inf") is None
 
 
 def test_build_budget_rows_without_raw_reports_na_delta(
@@ -187,3 +201,54 @@ def test_build_budget_rows_missing_solve_rate_is_na(tmp_path: Path, monkeypatch)
     assert len(rows) == 2
     assert rows[1]["solve_rate"] == "N/A"
     assert rows[1]["delta"] == "N/A"
+
+
+def test_build_budget_rows_accepts_string_min_tokens(tmp_path: Path, monkeypatch) -> None:
+    run_name = "glm-4.7__od_glm-4.7_la_lf-0p0001_lt-40000__mini__2026-02-10_00-06-03"
+    raw_name = "glm-4.7__raw__mini__2026-02-09_00-00-00"
+    trajectories_root = tmp_path / "trajectories"
+    (trajectories_root / "root" / run_name).mkdir(parents=True)
+    (trajectories_root / "root" / raw_name).mkdir(parents=True)
+
+    df = pd.DataFrame(
+        [
+            {
+                "run_name": raw_name,
+                "created_at": "2026-02-09T00:00:00Z",
+                "model": "glm-4.7",
+                "strategy": "raw",
+                "summarizer": "same",
+                "instances_subset": "verified-mini",
+                "hp_limit_min_tokens": "0",
+                "hp_limit_aware": False,
+                "eval_complete": True,
+                "solve_rate": 0.64,
+            },
+            {
+                "run_name": run_name,
+                "created_at": "2026-02-10T00:06:03Z",
+                "model": "glm-4.7",
+                "strategy": "on_demand",
+                "summarizer": "same",
+                "instances_subset": "verified-mini",
+                "hp_limit_min_tokens": "40000",
+                "hp_limit_aware": "true",
+                "eval_complete": True,
+                "solve_rate": 0.58,
+            },
+        ]
+    )
+
+    monkeypatch.setattr(
+        budget_table,
+        "summarize_run",
+        lambda run_dir, source="auto": {
+            "log": {"trigger_rate": 0.9},
+            "traj": {"summary_rate": 0.9},
+        },
+    )
+
+    rows, raw_rate = build_budget_stress_rows(df, trajectories_root, quiet_missing=True)
+    assert raw_rate == 0.64
+    assert len(rows) == 2
+    assert rows[1]["trigger_rate"] == "90.0%"

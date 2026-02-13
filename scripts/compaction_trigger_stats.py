@@ -106,7 +106,8 @@ def compute_run_stats_from_traj(run_dir: Path) -> list[InstanceStats]:
         else:
             continue
         history = data.get("history") or []
-        info = data.get("info") or {}
+        raw_info = data.get("info")
+        info = raw_info if isinstance(raw_info, dict) else {}
 
         n_compactions = len(summaries)
         turns = 0
@@ -189,10 +190,10 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         try:
             return int(float(value))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return default
 
 

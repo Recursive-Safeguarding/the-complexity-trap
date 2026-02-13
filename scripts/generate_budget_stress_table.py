@@ -74,6 +74,21 @@ def _safe_float(value: object) -> float | None:
     return parsed
 
 
+def _safe_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(parsed):
+            return None
+        return int(parsed)
+
+
 def resolve_trajectory_run_dir(
     trajectories_root: Path,
     run_name: str,
@@ -135,7 +150,7 @@ def trigger_rate_from_summary(run_row: pd.Series, run_summary: dict[str, Any]) -
     - Periodic masking: not measurable via current artifacts -> N/A.
     """
     strategy = str(run_row.get("strategy", ""))
-    limit_aware = bool(run_row.get("hp_limit_aware", False))
+    limit_aware = _boollike(run_row.get("hp_limit_aware", False))
 
     if strategy == "raw":
         return "--"
@@ -186,6 +201,7 @@ def build_budget_stress_rows(
     subset_norm = work["instances_subset"].astype(str).str.lower().str.replace("_", "-", regex=False)
     work["instances_subset_norm"] = subset_norm
     work["summarizer"] = work["summarizer"].apply(_norm_summarizer)
+    work["hp_limit_min_tokens_norm"] = work["hp_limit_min_tokens"].apply(_safe_int)
 
     # Keep only latest run per run_name after filtering to evaluated runs.
     work = work[work["eval_complete"].apply(_boollike)].copy()
@@ -194,7 +210,7 @@ def build_budget_stress_rows(
     mask_budget = (
         (work["model"] == "glm-4.7")
         & (work["instances_subset_norm"].isin(["verified-mini", "verifiedmini", "mini"]))
-        & (work["hp_limit_min_tokens"] == 40000)
+        & (work["hp_limit_min_tokens_norm"] == 40000)
     )
     budget_df = work[mask_budget].copy()
 
@@ -242,7 +258,7 @@ def build_budget_stress_rows(
             else:
                 config_name = f"On-demand summary ({summarizer})"
         elif strategy == "observation_masking":
-            config_name = "Limit-aware masking" if bool(run.get("hp_limit_aware", False)) else "Periodic masking"
+            config_name = "Limit-aware masking" if _boollike(run.get("hp_limit_aware", False)) else "Periodic masking"
         elif strategy == "llm_summary":
             if summarizer in ("same", "glm-4.7"):
                 config_name = "Periodic summary (self)"

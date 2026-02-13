@@ -250,9 +250,10 @@ def fetch_runs(project: str, entity: str | None = None, use_cache: bool = True) 
             if val is None:
                 return 0
             try:
-                return float(val)
+                parsed = float(val)
             except (TypeError, ValueError):
                 return 0
+            return parsed if np.isfinite(parsed) else 0
 
         exit_other = _num(exit_summary.get("exit/other", 0))
         for key, val in exit_summary.items():
