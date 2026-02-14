@@ -435,10 +435,16 @@ def generate_latex_table(results: pd.DataFrame) -> str:
 
     if has_summary_calls:
         col_spec = "lccccc"
-        header_row = r"Configuration & Trigger & Solved & Rate (\%) & $\Delta$ vs Raw & Summary Calls \\"
+        header_row = (
+            r"\textbf{Configuration} $\downarrow$ & \textbf{Trigger} & \textbf{Solved} "
+            r"& \textbf{Rate} (\%) & $\Delta$ vs \textbf{Raw} & \textbf{Summary Calls} \\"
+        )
     else:
         col_spec = "lcccc"
-        header_row = r"Configuration & Trigger & Solved & Rate (\%) & $\Delta$ vs Raw \\"
+        header_row = (
+            r"\textbf{Configuration} $\downarrow$ & \textbf{Trigger} & \textbf{Solved} "
+            r"& \textbf{Rate} (\%) & $\Delta$ vs \textbf{Raw} \\"
+        )
 
     caption = (
         r"Solve rates on SWE-bench Verified-Mini (50 instances; \texttt{verified-mini}) with GLM-4.7. "
@@ -456,10 +462,16 @@ def generate_latex_table(results: pd.DataFrame) -> str:
 
     if has_summary_calls:
         col_spec = "lccccc"
-        header_row = r"Configuration & Trigger & Solved & Rate (\%) & $\Delta$ vs Raw & Summary Calls \\"
+        header_row = (
+            r"\textbf{Configuration} $\downarrow$ & \textbf{Trigger} & \textbf{Solved} "
+            r"& \textbf{Rate} (\%) & $\Delta$ vs \textbf{Raw} & \textbf{Summary Calls} \\"
+        )
     else:
         col_spec = "lcccc"
-        header_row = r"Configuration & Trigger & Solved & Rate (\%) & $\Delta$ vs Raw \\"
+        header_row = (
+            r"\textbf{Configuration} $\downarrow$ & \textbf{Trigger} & \textbf{Solved} "
+            r"& \textbf{Rate} (\%) & $\Delta$ vs \textbf{Raw} \\"
+        )
 
     caption = (
         r"Solve rates on SWE-bench Verified-Mini (50 instances; \texttt{verified-mini}) with GLM-4.7. "
@@ -523,10 +535,13 @@ def generate_latex_table(results: pd.DataFrame) -> str:
                         lines.append(
                             f"  {label} & -- & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & --{summary_calls_suffix} \\\\"
                         )
+                        lines.append(r"  \midrule")
                     else:
                         lines.append(
                             f"  {label} & {trigger_cell} & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & {delta_str}{summary_calls_suffix} \\\\"
                         )
+                        if strat == "observation_masking" and trigger == "on_demand":
+                            lines.append(r"  \midrule")
                     continue
             pending_suffix = " & --" if has_summary_calls else ""
             lines.append(f"  {label} & {trigger_cell} & \\textit{{pending}} & -- & --{pending_suffix} \\\\")
@@ -551,10 +566,13 @@ def generate_latex_table(results: pd.DataFrame) -> str:
             lines.append(
                 f"  {label} & -- & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & --{summary_calls_cell} \\\\"
             )
+            lines.append(r"  \midrule")
         else:
             lines.append(
                 f"  {label} & {trigger_cell} & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & {delta_str}{summary_calls_cell} \\\\"
             )
+            if strat == "observation_masking" and trigger == "on_demand":
+                lines.append(r"  \midrule")
 
     lines.extend([
         r"\bottomrule",
@@ -732,10 +750,16 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
     ax.set_ylabel("Solve Rate")
     ax.set_ylim(0, 0.80)
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.0%}"))
-    ax.legend(handles=legend_elements, loc="upper right", framealpha=0.9)
-    ax.set_title("Periodic vs On-Demand Context Compaction (GLM-4.7, n=50)")
+    ax.legend(
+        handles=legend_elements,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.15),
+        ncol=3,
+        framealpha=0.9,
+    )
+    ax.set_title("Periodic vs On-Demand Context Compaction (GLM-4.7, n=50)", pad=10)
 
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0.08, 1, 1])
     plt.savefig(output_path, bbox_inches="tight", dpi=300)
     print(f"Figure saved to {output_path}")
     plt.close()
