@@ -70,6 +70,66 @@ PHASE3_PERIODIC = {
     "hybrid_minimax": {"k": 28, "n": 50, "rate": 0.560, "cost": 0.42},
 }
 
+# Cross-model periodic results (verified-mini, n=50).
+# Used by paper_results.py for the cross-model comparison table.
+CROSS_MODEL_PERIODIC = {
+    "kimi-2.5": {
+        "context_k": 256,
+        "raw": {"k": 35, "n": 50},
+        "masking": {"k": 30, "n": 50},
+        "summary_self": {"k": 31, "n": 50},
+    },
+    "glm-5": {
+        "context_k": 200,
+        "raw": {"k": 35, "n": 50},
+        "masking": {"k": 31, "n": 50},
+        "summary_self": {"k": 27, "n": 50},
+    },
+    "deepseek-chat": {
+        "context_k": 128,
+        "raw": {"k": 32, "n": 50},
+        "masking": {"k": 34, "n": 50},
+        "summary_self": {"k": 31, "n": 50},
+    },
+    "glm-4.7": {
+        "context_k": 200,
+        "raw": {"k": 32, "n": 50},
+        "masking": {"k": 31, "n": 50},
+        "summary_self": {"k": 28, "n": 50},
+    },
+    "minimax-m2.1": {
+        "context_k": 204,
+        "raw": {"k": 30, "n": 50},
+        "masking": {"k": 31, "n": 50},
+        "summary_self": {"k": 34, "n": 50},
+    },
+    "minimax-m2.5": {
+        "context_k": 204,
+        "raw": {"k": 37, "n": 50},
+        "masking": {"k": 32, "n": 50},
+        "summary_self": {"k": 35, "n": 50},
+    },
+}
+
+# Threshold sweep hardcoded data (GLM-4.7, n=50).
+# Keys: (strategy_group, summarizer, L, trigger_type)
+THRESHOLD_SWEEP_DATA = {
+    ("masking", None, 40000, "on_demand"): {"k": 26, "n": 50, "preds": 50, "trigger_pct": 86},
+    ("summary", "glm-4.7", 40000, "on_demand"): {"k": 23, "n": 50, "preds": 35, "trigger_pct": 86},
+    ("summary", "minimax-m2.1", 40000, "on_demand"): {"k": 28, "n": 50, "preds": 50, "trigger_pct": 86},
+    ("hybrid", "minimax-m2.1", 40000, "on_demand"): {"k": 26, "n": 50, "preds": 50, "trigger_pct": 86},
+}
+
+# trigger rate (%) by threshold L for GLM-4.7 raw baseline
+TRIGGER_RATE_BY_THRESHOLD = {
+    40000: 86,
+    50000: 72,
+    60000: 28,
+    80000: 14,
+    100000: 8,
+    170000: 2,
+}
+
 # Table 2: LLM-Summary generation costs per model
 SUMMARY_COSTS = {
     "qwen3-32b": {"cost": 0.0143, "pct": 2.86},

@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -487,7 +488,7 @@ def generate_latex_table(results: pd.DataFrame) -> str:
     ]
 
     labels = {
-        ("raw", "baseline", "same", None): "Raw (no compaction)",
+        ("raw", "baseline", "same", None): "Raw (sliding window)",
         ("observation_masking", "periodic", "same", None): "Periodic masking",
         ("observation_masking", "on_demand", "same", None): "On-demand masking",
         ("llm_summary", "periodic", "same", None): "Periodic summary (self)",
@@ -673,6 +674,21 @@ def generate_latex_table(results: pd.DataFrame) -> str:
             if strat == "observation_masking" and trigger == "on_demand":
                 lines.append(r"  \midrule")
 
+    # bold the best solve rate
+    rate_re = re.compile(r'& (\d+\.\d+)\\% \$\\pm\$')
+    best_val, best_idx = -1.0, -1
+    for i, line in enumerate(lines):
+        m = rate_re.search(line)
+        if m:
+            val = float(m.group(1))
+            if val > best_val:
+                best_val, best_idx = val, i
+    if best_idx >= 0:
+        old = f"{best_val:.1f}\\%"
+        lines[best_idx] = lines[best_idx].replace(
+            f"& {old} $\\pm$", f"& \\textbf{{{old}}} $\\pm$", 1,
+        )
+
     lines.extend([
         r"\bottomrule",
         r"\end{tabular}",
@@ -687,10 +703,14 @@ MODEL_DISPLAY_NAMES = {
     "deepseek-chat": "DeepSeek V3.2",
     "glm-4.7": "GLM-4.7",
     "minimax-m2.1": "MiniMax M2.1",
+    "minimax-m2.5": "MiniMax M2.5",
 }
 
 # display order: descending raw solve rate, then alphabetical
-CROSS_MODEL_ORDER = ["kimi-2.5", "glm-5", "deepseek-chat", "glm-4.7", "minimax-m2.1"]
+CROSS_MODEL_ORDER = ["minimax-m2.5", "kimi-2.5", "glm-5", "deepseek-chat", "glm-4.7", "minimax-m2.1"]
+
+# TODO: add CROSS_MODEL_OVERRIDES dict for collaborator-provided corrections
+# that take priority over WandB data (e.g. MiniMax raw = 30/50 not 29/50)
 
 
 def build_cross_model_table(
@@ -1266,7 +1286,12 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("Solve Rate")
-    ax.set_ylim(0, 0.80)
+    fig1_all_rates = [r for r in periodic_rates + od_rates if r and r > 0]
+    if raw_rate:
+        fig1_all_rates.append(raw_rate)
+    fig1_y_min = max(0, np.floor((min(fig1_all_rates) - 0.10) * 10) / 10) if fig1_all_rates else 0  # round down to nearest 10%
+    ax.set_ylim(fig1_y_min, 0.80)
+    ax.yaxis.set_major_locator(plt.MultipleLocator(0.10))
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.0%}"))
     ax.legend(
         handles=legend_elements,
@@ -1392,7 +1417,15 @@ def generate_cross_model_figure(cm_df: pd.DataFrame, output_path: str) -> None:
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("Solve Rate")
-    ax.set_ylim(0, 0.80)
+    all_rates = []
+    for prefix, _, _ in strategy_specs:
+        for _, row in cm_df.iterrows():
+            rate = row.get(f"{prefix}_rate")
+            if rate is not None and isinstance(rate, (int, float)) and np.isfinite(rate) and rate > 0:
+                all_rates.append(float(rate))
+    y_min = max(0, np.floor((min(all_rates) - 0.10) * 10) / 10) if all_rates else 0  # round down to nearest 10%
+    ax.set_ylim(y_min, 0.80)
+    ax.yaxis.set_major_locator(plt.MultipleLocator(0.10))
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.0%}"))
     ax.set_title("Cross-Model Periodic Compaction (SWE-bench Verified mini, n=50)", pad=20)
     ax.legend(
