@@ -38,7 +38,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 sys.path.insert(0, str(Path(__file__).parent))
-from dashboard_shared import fetch_runs, dedupe_latest_runs, PHASE3_PERIODIC
+from dashboard_shared import (
+    fetch_runs, dedupe_latest_runs, PHASE3_PERIODIC, CROSS_MODEL_PERIODIC,
+    THRESHOLD_SWEEP_DATA, TRIGGER_RATE_BY_THRESHOLD,
+)
 from compaction_trigger_stats import compute_run_stats_from_traj
 
 
@@ -387,6 +390,75 @@ def format_terminal_table(results: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def format_cross_model_terminal_table(cm_df: pd.DataFrame) -> str:
+    """Format cross-model comparison as a compact terminal table."""
+    if cm_df.empty:
+        return "No cross-model results available."
+
+    lines = []
+    lines.append("Cross-Model Comparison (periodic strategies, verified-mini, n=50)")
+    header = f"{'Model':<18} {'Context':>7}   {'Raw':>12}  {'Masking':>12}  {'Summary (self)':>14}"
+    lines.append(header)
+    lines.append("-" * 72)
+
+    for _, row in cm_df.iterrows():
+        display = MODEL_DISPLAY_NAMES.get(row["model"], row["model"])
+        context = _format_context_window_k(row.get("context_k"))
+
+        cells = []
+        rates = {}
+        for col in ("raw", "masking", "summary_self"):
+            rate = row.get(f"{col}_rate")
+            k = row.get(f"{col}_k")
+            rates[col] = rate
+            if rate is None or (isinstance(rate, float) and not np.isfinite(rate)):
+                cells.append("---")
+            else:
+                cells.append(f"{rate * 100:.1f}% ({int(k)})")
+
+        valid = {c: r for c, r in rates.items() if r is not None and isinstance(r, float) and np.isfinite(r)}
+        best_col = max(valid, key=valid.get) if valid else None
+        formatted = []
+        for col, cell in zip(("raw", "masking", "summary_self"), cells):
+            if col == best_col and cell != "---":
+                formatted.append(cell + "*")
+            else:
+                formatted.append(cell)
+
+        lines.append(
+            f"{display:<18} {context:>7}   {formatted[0]:>12}  {formatted[1]:>12}  {formatted[2]:>14}"
+        )
+
+    lines.append("")
+    lines.append("* = best strategy for that model")
+    return "\n".join(lines)
+
+
+def _build_cm_from_hardcoded() -> pd.DataFrame:
+    """Build cross-model DataFrame from CROSS_MODEL_PERIODIC hardcoded data."""
+    rows = []
+    for model in CROSS_MODEL_ORDER:
+        fb = CROSS_MODEL_PERIODIC.get(model, {})
+        row = {"model": model, "context_k": fb.get("context_k", 0)}
+        for col in ("raw", "masking", "summary_self"):
+            cell = fb.get(col)
+            if cell is not None:
+                k, n = cell["k"], cell["n"]
+                rate = k / n if n else 0.0
+                lo, hi = wilson_ci(k, n)
+                row[f"{col}_k"] = k
+                row[f"{col}_n"] = n
+                row[f"{col}_rate"] = rate
+                row[f"{col}_ci"] = (hi - lo) / 2
+            else:
+                row[f"{col}_k"] = None
+                row[f"{col}_n"] = None
+                row[f"{col}_rate"] = None
+                row[f"{col}_ci"] = None
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def generate_latex_table(results: pd.DataFrame) -> str:
     if results.empty:
         return "% No results available"
@@ -419,14 +491,25 @@ def generate_latex_table(results: pd.DataFrame) -> str:
         ("observation_masking", "periodic", "same", None): "Periodic masking",
         ("observation_masking", "on_demand", "same", None): "On-demand masking",
         ("llm_summary", "periodic", "same", None): "Periodic summary (self)",
-        ("llm_summary", "periodic", "minimax-m2.1", None): "Periodic summary (minimax)",
+        ("llm_summary", "periodic", "minimax-m2.1", None): "Periodic summary (MiniMax)",
         ("on_demand", "on_demand", "same", 0): "On-demand summary (self, L=170k)",
         ("on_demand", "on_demand", "same", 40000): "On-demand summary (self, L=40k)",
-        ("on_demand", "on_demand", "minimax-m2.1", None): "On-demand summary (minimax)",
+        ("on_demand", "on_demand", "minimax-m2.1", None): "On-demand summary (MiniMax)",
     }
 
     raw_rows = results[results["strategy"] == "raw"]
     raw_rate = _pick_preferred_row(raw_rows)["solve_rate"] if len(raw_rows) > 0 else 0.64
+    use_phase3_fallback = (
+        "run_name" in results.columns
+        and len(results) > 0
+        and results["run_name"].astype(str).str.startswith("glm-4.7__").all()
+    )
+    phase3_on_demand_fallback = {
+        ("observation_masking", "on_demand", "same", None): (29, 50),
+        ("on_demand", "on_demand", "same", 0): (31, 50),
+        ("on_demand", "on_demand", "same", 40000): (23, 50),
+        ("on_demand", "on_demand", "minimax-m2.1", None): (28, 50),
+    }
 
     has_summary_calls = (
         "avg_summary_calls" in results.columns
@@ -511,6 +594,22 @@ def generate_latex_table(results: pd.DataFrame) -> str:
 
         matching = results[mask]
         if matching.empty:
+            if use_phase3_fallback and key in phase3_on_demand_fallback:
+                k, n = phase3_on_demand_fallback[key]
+                lo, hi = wilson_ci(k, n)
+                rate = k / n if n else 0.0
+                ci = (hi - lo) / 2
+                delta = rate - raw_rate
+                delta_str = _pct(delta, signed=True)
+                n_k = f"{k}/{n}"
+                fallback_summary_calls = " & --" if has_summary_calls else ""
+                lines.append(
+                    f"  {label} & {trigger_cell} & {n_k} & {_pct(rate)} $\\pm$ {_pct(ci)} & {delta_str}{fallback_summary_calls} \\\\"
+                )
+                if strat == "observation_masking" and trigger == "on_demand":
+                    lines.append(r"  \midrule")
+                continue
+
             # fall back to Phase-3 hardcoded numbers
             if trigger == "periodic":
                 phase3_key = None
@@ -582,6 +681,408 @@ def generate_latex_table(results: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+MODEL_DISPLAY_NAMES = {
+    "kimi-2.5": "Kimi-2.5",
+    "glm-5": "GLM-5",
+    "deepseek-chat": "DeepSeek V3.2",
+    "glm-4.7": "GLM-4.7",
+    "minimax-m2.1": "MiniMax M2.1",
+}
+
+# display order: descending raw solve rate, then alphabetical
+CROSS_MODEL_ORDER = ["kimi-2.5", "glm-5", "deepseek-chat", "glm-4.7", "minimax-m2.1"]
+
+
+def build_cross_model_table(
+    project: str,
+    entity: str | None = None,
+) -> pd.DataFrame:
+    """Build a cross-model comparison table from WandB, falling back to hardcoded data."""
+    target_models = set(CROSS_MODEL_PERIODIC.keys())
+    strategy_map = {
+        "raw": "raw",
+        "observation_masking": "masking",
+        "llm_summary": "summary_self",
+    }
+
+    results: dict[tuple[str, str], dict] = {}
+
+    try:
+        df = fetch_runs(project, entity)
+        if "instances_subset" in df.columns:
+            df["instances_subset_norm"] = (
+                df["instances_subset"].astype(str).str.lower().str.replace("_", "-", regex=False)
+            )
+        else:
+            df["instances_subset_norm"] = "unknown"
+
+        mask = (
+            df["model"].isin(target_models)
+            & df["instances_subset_norm"].isin(["verified-mini", "verifiedmini", "mini"])
+            & df["n_instances"].between(40, 60)
+        )
+        df = df[mask].copy()
+        if "eval_complete" in df.columns:
+            df = df[df["eval_complete"]].copy()
+        df = dedupe_latest_runs(df)
+
+        for _, r in df.iterrows():
+            model = r["model"]
+            strat = r["strategy"]
+            col_key = strategy_map.get(strat)
+            if col_key is None:
+                continue
+            # for summary, only keep self-summarization
+            if strat == "llm_summary":
+                summ = str(r.get("summarizer", "same")).strip().lower()
+                if summ not in ("same", model, "", "none", "nan", "reuse-agent-model"):
+                    continue
+            # skip limit-aware / on-demand variants
+            trigger = classify_trigger(r)
+            if trigger not in ("baseline", "periodic"):
+                continue
+
+            k = int(r["n_resolved"])
+            n = int(r["n_instances"])
+            results[(model, col_key)] = {"k": k, "n": n}
+    except Exception:
+        pass
+
+    # fill gaps from hardcoded fallback
+    rows = []
+    for model in CROSS_MODEL_ORDER:
+        fallback = CROSS_MODEL_PERIODIC.get(model, {})
+        context_k = fallback.get("context_k", 0)
+        row = {"model": model, "context_k": context_k}
+        for col in ("raw", "masking", "summary_self"):
+            cell = results.get((model, col))
+            if cell is None:
+                fb = fallback.get(col)
+                if fb is not None:
+                    cell = {"k": fb["k"], "n": fb["n"]}
+            if cell is not None:
+                k, n = cell["k"], cell["n"]
+                rate = k / n if n else 0.0
+                lo, hi = wilson_ci(k, n)
+                row[f"{col}_k"] = k
+                row[f"{col}_n"] = n
+                row[f"{col}_rate"] = rate
+                row[f"{col}_ci"] = (hi - lo) / 2
+            else:
+                row[f"{col}_k"] = None
+                row[f"{col}_n"] = None
+                row[f"{col}_rate"] = None
+                row[f"{col}_ci"] = None
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def generate_cross_model_latex(cm_df: pd.DataFrame) -> str:
+    """Generate a compact LaTeX table for cross-model comparison."""
+    if cm_df.empty:
+        return "% No cross-model results available"
+
+    def _fmt_cell(rate: float | None, is_best: bool) -> str:
+        if rate is None or (isinstance(rate, float) and not np.isfinite(rate)):
+            return "---"
+        pct = f"{rate * 100:.1f}\\%"
+        if is_best:
+            return f"\\textbf{{{pct}}}"
+        return pct
+
+    lines = [
+        r"\begin{table}[t]",
+        r"\centering",
+        r"\caption{Cross-model solve rates on \texttt{verified-mini} (periodic strategies). "
+        r"Bold indicates the best strategy for each model.}",
+        r"\label{tab:cross-model}",
+        r"\begin{tabular}{llccc}",
+        r"\toprule",
+        r"Model & Context & Raw & Masking & Summary (self) \\",
+        r"\midrule",
+    ]
+
+    for _, row in cm_df.iterrows():
+        display = MODEL_DISPLAY_NAMES.get(row["model"], row["model"])
+        context = _format_context_window_k(row.get("context_k"))
+
+        rates = {}
+        for col in ("raw", "masking", "summary_self"):
+            rates[col] = row.get(f"{col}_rate")
+
+        valid_rates = {c: r for c, r in rates.items() if r is not None and np.isfinite(r)}
+        best_col = max(valid_rates, key=valid_rates.get) if valid_rates else None
+
+        cells = []
+        for col in ("raw", "masking", "summary_self"):
+            cells.append(_fmt_cell(rates[col], col == best_col))
+
+        lines.append(f"  {display} & {context} & {cells[0]} & {cells[1]} & {cells[2]} \\\\")
+
+    lines.extend([
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+    ])
+    return "\n".join(lines)
+
+
+def build_threshold_sweep_table(
+    project: str,
+    entity: str | None = None,
+) -> pd.DataFrame:
+    """Build a threshold sweep table from WandB, falling back to THRESHOLD_SWEEP_DATA."""
+    RAW_RATE = 0.64  # 32/50
+
+    strat_group_map = {
+        "observation_masking": "masking",
+        "hybrid": "hybrid",
+        "llm_summary": "summary",
+        "on_demand": "summary",
+    }
+
+    wandb_data: dict[tuple, dict] = {}
+
+    try:
+        df = fetch_runs(project, entity)
+        if "instances_subset" in df.columns:
+            df["instances_subset_norm"] = (
+                df["instances_subset"].astype(str).str.lower().str.replace("_", "-", regex=False)
+            )
+        else:
+            df["instances_subset_norm"] = "unknown"
+
+        mask = (
+            (df["model"] == "glm-4.7")
+            & df["instances_subset_norm"].isin(["verified-mini", "verifiedmini", "mini"])
+            & df["n_instances"].between(40, 60)
+        )
+        df = df[mask].copy()
+        if "eval_complete" in df.columns:
+            df = df[df["eval_complete"]].copy()
+        df = dedupe_latest_runs(df)
+
+        for _, r in df.iterrows():
+            strat = r["strategy"]
+            group = strat_group_map.get(strat)
+            if group is None:
+                continue
+
+            limit_aware = _boollike(r.get("hp_limit_aware", False))
+            min_tokens = _intlike(r.get("hp_limit_min_tokens", 0)) or 0
+
+            if strat == "raw":
+                continue
+
+            if strat == "on_demand" or limit_aware:
+                trigger_type = "on_demand"
+                if min_tokens == 0:  # fraction-driven → effective 170k
+                    L = 170000
+                else:
+                    L = min_tokens
+            else:
+                trigger_type = "periodic"
+                L = None
+
+            summ = str(r.get("summarizer", "same")).strip().lower()
+            if summ in ("same", "", "none", "nan", "reuse-agent-model", "glm-4.7"):
+                summarizer = "glm-4.7" if group in ("summary", "hybrid") else None
+            else:
+                summarizer = summ
+
+            k = int(r["n_resolved"])
+            n = int(r["n_instances"])
+            n_eval = int(r.get("n_evaluated", 0))
+
+            key = (group, summarizer, L, trigger_type)
+            wandb_data[key] = {"k": k, "n": n, "preds": n_eval}
+    except Exception:
+        pass
+
+    all_keys = set(THRESHOLD_SWEEP_DATA.keys()) | set(wandb_data.keys())
+
+    rows = []
+    for key in sorted(all_keys, key=lambda x: (x[0], x[1] or "", x[2] or 0, x[3])):
+        group, summarizer, L, trigger_type = key
+
+        cell = wandb_data.get(key)
+        if cell is None:
+            fb = THRESHOLD_SWEEP_DATA.get(key)
+            if fb is None:
+                continue
+            cell = fb.copy()
+
+        k, n = cell["k"], cell["n"]
+        preds = cell.get("preds", n)
+        trigger_pct = cell.get("trigger_pct")
+        if trigger_pct is None and L is not None:
+            trigger_pct = TRIGGER_RATE_BY_THRESHOLD.get(L, 0)
+        elif trigger_pct is None:
+            trigger_pct = 100 if trigger_type == "periodic" else 0
+
+        rate = k / n if n > 0 else 0.0
+        lo, hi = wilson_ci(k, n)
+        vs_raw = rate - RAW_RATE
+
+        rows.append({
+            "strategy_group": group,
+            "summarizer": summarizer,
+            "L": L,
+            "trigger_type": trigger_type,
+            "trigger_pct": trigger_pct,
+            "preds": preds,
+            "k": k,
+            "n": n,
+            "solve_rate": rate,
+            "ci_lo": lo,
+            "ci_hi": hi,
+            "ci_half": (hi - lo) / 2,
+            "vs_raw": vs_raw,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def _fmt_L(L: int | float | None) -> str:
+    if L is None or (isinstance(L, float) and not np.isfinite(L)):
+        return "---"
+    L_int = int(L)
+    if L_int >= 1000:
+        return f"{L_int // 1000}k"
+    return str(L_int)
+
+
+def _format_context_window_k(context_k: object) -> str:
+    """Format context-window values that are encoded in thousands of tokens."""
+    val = _floatlike(context_k)
+    if val is None:
+        return "---"
+    if val >= 1000:
+        m = val / 1000.0
+        m_txt = f"{m:.1f}".rstrip("0").rstrip(".")
+        return f"{m_txt}M"
+    k_txt = f"{val:.1f}".rstrip("0").rstrip(".")
+    return f"{k_txt}K"
+
+
+def generate_threshold_sweep_latex(ts_df: pd.DataFrame) -> str:
+    """Generate LaTeX table for threshold sweep (Table 8)."""
+    if ts_df.empty:
+        return "% No threshold sweep results available"
+
+    def _pct(x: float, *, signed: bool = False) -> str:
+        val = x * 100.0
+        if signed:
+            return f"{val:+.1f}\\%"
+        return f"{val:.1f}\\%"
+
+    lines = [
+        r"\begin{table}[t]",
+        r"\centering",
+        r"\caption{Solve rate vs.\ budget threshold $L$ (GLM-4.7, on-demand triggering, $n$=50). "
+        r"Periodic rows fire every $N$ turns regardless of budget.}",
+        r"\label{tab:threshold-sweep}",
+        r"\begin{tabular}{llccccc}",
+        r"\toprule",
+        r"Strategy & Summarizer & $L$ & Trigger Rate & Preds & Solve Rate (\%) & $\Delta$ vs Raw \\",
+        r"\midrule",
+    ]
+
+    group_order = ["masking", "hybrid", "summary"]
+    group_labels = {"masking": "Masking", "hybrid": "Hybrid", "summary": "Summary"}
+
+    first_group = True
+    for group in group_order:
+        group_rows = ts_df[ts_df["strategy_group"] == group].copy()
+        if group_rows.empty:
+            continue
+
+        if not first_group:
+            lines.append(r"  \midrule")
+        first_group = False
+
+        # sort: on_demand by L ascending, then periodic at the end
+        group_rows = group_rows.sort_values(
+            by=["trigger_type", "summarizer", "L"],
+            key=lambda col: col.map(lambda v: (0 if v == "on_demand" else 1) if col.name == "trigger_type"
+                                    else (v or "") if col.name == "summarizer"
+                                    else (v if v is not None else 999999)),
+            ascending=True,
+        )
+
+        best_rate = group_rows["solve_rate"].max()
+
+        for _, row in group_rows.iterrows():
+            strat_label = f"on-demand {group_labels[group].lower()}" if row["trigger_type"] == "on_demand" else f"periodic {group_labels[group].lower()}"
+            summ = row["summarizer"]
+            summ_cell = "---" if summ is None else summ.replace("_", r"\_")
+            L_cell = _fmt_L(row["L"])
+            trigger_cell = f"$\\sim${row['trigger_pct']}\\%" if row["trigger_pct"] < 100 else "100\\%"
+            preds_cell = f"{int(row['preds'])}/{int(row['n'])}"
+            rate_str = _pct(row["solve_rate"])
+            delta_str = _pct(row["vs_raw"], signed=True)
+
+            if row["solve_rate"] == best_rate:
+                rate_str = f"\\textbf{{{rate_str}}}"
+
+            lines.append(
+                f"  {strat_label} & {summ_cell} & {L_cell} & {trigger_cell} & {preds_cell} & {rate_str} & {delta_str} \\\\"
+            )
+
+    lines.extend([
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+    ])
+    return "\n".join(lines)
+
+
+def format_threshold_sweep_terminal(ts_df: pd.DataFrame) -> str:
+    """Format threshold sweep table for terminal display."""
+    if ts_df.empty:
+        return "No threshold sweep results available."
+
+    lines = []
+    header = f"{'Strategy':<25} {'Summarizer':<15} {'L':>6} {'Trig%':>6} {'Preds':>7} {'Rate':>8} {'CI':>14} {'vs Raw':>8}"
+    lines.append(header)
+    lines.append("-" * len(header))
+
+    group_order = ["masking", "hybrid", "summary"]
+    first_group = True
+
+    for group in group_order:
+        group_rows = ts_df[ts_df["strategy_group"] == group].copy()
+        if group_rows.empty:
+            continue
+        if not first_group:
+            lines.append("")
+        first_group = False
+
+        group_rows = group_rows.sort_values(
+            by=["trigger_type", "summarizer", "L"],
+            key=lambda col: col.map(lambda v: (0 if v == "on_demand" else 1) if col.name == "trigger_type"
+                                    else (v or "") if col.name == "summarizer"
+                                    else (v if v is not None else 999999)),
+            ascending=True,
+        )
+
+        for _, row in group_rows.iterrows():
+            strat_label = f"od-{group}" if row["trigger_type"] == "on_demand" else f"periodic-{group}"
+            summ = row["summarizer"] or "---"
+            L_str = _fmt_L(row["L"])
+            trig_str = f"~{row['trigger_pct']}%"
+            preds_str = f"{int(row['preds'])}/{int(row['n'])}"
+            rate_str = f"{row['solve_rate']:.1%}"
+            ci_str = f"[{row['ci_lo']:.1%}, {row['ci_hi']:.1%}]"
+            delta_str = f"{row['vs_raw']:+.1%}"
+
+            lines.append(
+                f"{strat_label:<25} {summ:<15} {L_str:>6} {trig_str:>6} {preds_str:>7} {rate_str:>8} {ci_str:>14} {delta_str:>8}"
+            )
+
+    return "\n".join(lines)
+
+
 def generate_figure(results: pd.DataFrame, output_path: str) -> None:
     """Generate Figure 1: grouped bar chart comparing periodic vs on-demand."""
     import matplotlib.pyplot as plt
@@ -602,6 +1103,15 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
     })
 
     categories = []
+    use_phase3_fallback = (
+        "run_name" in results.columns
+        and len(results) > 0
+        and results["run_name"].astype(str).str.startswith("glm-4.7__").all()
+    )
+
+    def _rate_ci_from_counts(k: int, n: int) -> tuple[float, float]:
+        lo, hi = wilson_ci(k, n)
+        return (k / n if n else 0.0), (hi - lo) / 2
 
     def _p3_rate_ci(key: str, default_rate: float, default_ci: float) -> tuple[float, float]:
         data = PHASE3_PERIODIC.get(key)
@@ -617,9 +1127,7 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
         _pick_preferred_row(raw_rows)["ci_half"],
     ) if len(raw_rows) > 0 else _p3_rate_ci("raw", 0.64, 0.068)
 
-    # Masking: include only if we have an on-demand masking result (to keep the
-    # figure "complete-results only" for submission). Periodic-only baselines
-    # still appear in Table 1.
+    # Masking.
     periodic_mask = results[
         (results["strategy"] == "observation_masking") & (results["trigger"] == "periodic")
     ]
@@ -632,15 +1140,21 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
         primary = od_mask[min_tokens == 0]
         if len(primary) > 0:
             od_mask = primary
+    if len(periodic_mask) > 0:
+        periodic_mask_row = _pick_preferred_row(periodic_mask)
+        pm_rate, pm_ci = periodic_mask_row["solve_rate"], periodic_mask_row["ci_half"]
+    else:
+        pm_rate, pm_ci = _p3_rate_ci("masking", 0.62, 0.070)
     if len(od_mask) > 0:
-        if len(periodic_mask) > 0:
-            periodic_mask_row = _pick_preferred_row(periodic_mask)
-            pm_rate, pm_ci = periodic_mask_row["solve_rate"], periodic_mask_row["ci_half"]
-        else:
-            pm_rate, pm_ci = _p3_rate_ci("masking", 0.62, 0.070)
         od_mask_row = _pick_preferred_row(od_mask, prefer_min_tokens=0)
         odm_rate = od_mask_row["solve_rate"]
         odm_ci = od_mask_row["ci_half"]
+    elif use_phase3_fallback:
+        odm_rate, odm_ci = _rate_ci_from_counts(29, 50)
+    else:
+        odm_rate, odm_ci = None, None
+
+    if (odm_rate is not None) or use_phase3_fallback:
         categories.append(("Masking", pm_rate, pm_ci, odm_rate, odm_ci))
 
     # summary (self)
@@ -668,6 +1182,8 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
         od_sum_self_row = _pick_preferred_row(od_sum_self, prefer_min_tokens=0)
         ods_rate = od_sum_self_row["solve_rate"]
         ods_ci = od_sum_self_row["ci_half"]
+    elif use_phase3_fallback:
+        ods_rate, ods_ci = _rate_ci_from_counts(31, 50)
     else:
         ods_rate = None
         ods_ci = None
@@ -693,11 +1209,13 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
         od_sum_mm_row = _pick_preferred_row(od_sum_mm)
         odmm_rate = od_sum_mm_row["solve_rate"]
         odmm_ci = od_sum_mm_row["ci_half"]
+    elif use_phase3_fallback:
+        odmm_rate, odmm_ci = _rate_ci_from_counts(28, 50)
     else:
         odmm_rate = None
         odmm_ci = None
 
-    categories.append(("Summary\n(minimax)", pmm_rate, pmm_ci, odmm_rate, odmm_ci))
+    categories.append(("Summary\n(MiniMax)", pmm_rate, pmm_ci, odmm_rate, odmm_ci))
 
     # NOTE: We intentionally omit the "kimi" summarizer from the main paper
     # figure. It is an optional sensitivity run and often incomplete; including
@@ -707,9 +1225,9 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
     pal = sns.color_palette("muted")
     c_periodic, c_ondemand = pal[0], pal[1]
 
-    fig, ax = plt.subplots()
-    x = np.arange(len(categories))
-    width = 0.30
+    fig, ax = plt.subplots(figsize=(6.4, 3.35))
+    x = np.arange(len(categories)) * 1.18
+    width = 0.28
 
     periodic_rates = [c[1] for c in categories]
     periodic_cis = [c[2] for c in categories]
@@ -721,15 +1239,15 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
     ax.axhline(y=raw_rate, color="#555", linestyle="--", linewidth=0.7,
                label=f"Raw baseline ({raw_rate:.0%})", zorder=1)
 
-    bars_p = ax.bar(x - width / 2, periodic_rates, width, yerr=periodic_cis,
-                    capsize=3, color=c_periodic, alpha=0.85, label="Periodic",
-                    edgecolor="white", linewidth=0.5, zorder=2)
+    ax.bar(x - width / 2, periodic_rates, width,
+           color=c_periodic, alpha=0.85, label="Periodic",
+           edgecolor="white", linewidth=0.5, zorder=2)
 
     for i, avail in enumerate(od_available):
         rate = od_rates[i]
         ci = od_cis[i]
         if avail:
-            ax.bar(x[i] + width / 2, rate, width, yerr=ci, capsize=3,
+            ax.bar(x[i] + width / 2, rate, width,
                    color=c_ondemand, alpha=0.85, edgecolor="white", linewidth=0.5, zorder=2)
         else:
             ax.bar(x[i] + width / 2, 0.01, width, color="none",
@@ -753,15 +1271,145 @@ def generate_figure(results: pd.DataFrame, output_path: str) -> None:
     ax.legend(
         handles=legend_elements,
         loc="upper center",
-        bbox_to_anchor=(0.5, -0.15),
+        bbox_to_anchor=(0.5, 1.015),
         ncol=3,
         framealpha=0.9,
+        borderaxespad=0.2,
     )
-    ax.set_title("Periodic vs On-Demand Context Compaction (GLM-4.7, n=50)", pad=10)
+    ax.set_title("Periodic vs On-Demand Context Compaction (GLM-4.7, n=50)", pad=22)
+    ax.margins(x=0.06)
 
-    plt.tight_layout(rect=[0, 0.08, 1, 1])
-    plt.savefig(output_path, bbox_inches="tight", dpi=300)
+    plt.tight_layout(rect=[0, 0.0, 1.0, 0.98])
+    plt.savefig(output_path, bbox_inches="tight", pad_inches=0.02, dpi=300)
     print(f"Figure saved to {output_path}")
+    plt.close()
+
+
+def generate_cross_model_figure(cm_df: pd.DataFrame, output_path: str) -> None:
+    """Generate a cross-model grouped bar chart for periodic strategies."""
+    import matplotlib.pyplot as plt
+    import matplotlib
+    import seaborn as sns
+
+    if cm_df.empty:
+        print("No cross-model data available; skipping cross-model figure.")
+        return
+
+    sns.set_theme(style="whitegrid", font="Times New Roman")
+    matplotlib.rcParams.update({
+        "font.family": "serif",
+        "font.serif": ["Times New Roman"],
+        "font.size": 9,
+        "axes.labelsize": 10,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 8,
+        "figure.figsize": (6.4, 3.55),
+        "figure.dpi": 300,
+    })
+
+    if "model" in cm_df.columns:
+        cm_df = cm_df.copy()
+        cm_df["model"] = pd.Categorical(cm_df["model"], categories=CROSS_MODEL_ORDER, ordered=True)
+        cm_df = cm_df.sort_values("model")
+
+    labels = []
+    for _, row in cm_df.iterrows():
+        model = MODEL_DISPLAY_NAMES.get(row["model"], row["model"])
+        ctx = _format_context_window_k(row.get("context_k")).lower()
+        labels.append(f"{model}\n({ctx})")
+
+    x = np.arange(len(cm_df)) * 1.28
+    width = 0.24
+
+    fig, ax = plt.subplots(figsize=(6.8, 3.45))
+
+    muted = sns.color_palette("muted")
+    strategy_specs = [
+        ("raw", "Raw", muted[2]),
+        ("masking", "Masking", muted[0]),
+        ("summary_self", "Summary (self)", muted[1]),
+    ]
+    offsets = [-width, 0.0, width]
+
+    for offset, (prefix, legend_label, color) in zip(offsets, strategy_specs):
+        rates = []
+        cis = []
+        available = []
+        for _, row in cm_df.iterrows():
+            rate = row.get(f"{prefix}_rate")
+            ci = row.get(f"{prefix}_ci")
+            if rate is None or (isinstance(rate, float) and not np.isfinite(rate)):
+                rates.append(0.0)
+                cis.append(0.0)
+                available.append(False)
+            else:
+                rates.append(float(rate))
+                cis.append(float(ci) if ci is not None else 0.0)
+                available.append(True)
+
+        for i, present in enumerate(available):
+            xpos = x[i] + offset
+            if present:
+                ax.bar(
+                    xpos,
+                    rates[i],
+                    width,
+                    color=color,
+                    alpha=0.88,
+                    edgecolor="white",
+                    linewidth=0.5,
+                    zorder=3,
+                )
+            else:
+                ax.bar(
+                    xpos,
+                    0.008,
+                    width,
+                    color="none",
+                    edgecolor="#9e9e9e",
+                    linewidth=0.75,
+                    linestyle="--",
+                    hatch="///",
+                    zorder=2,
+                )
+                ax.text(
+                    xpos,
+                    0.022,
+                    "N/A",
+                    ha="center",
+                    va="bottom",
+                    fontsize=6.6,
+                    color="#777",
+                )
+
+    from matplotlib.patches import Patch
+    legend_handles = [
+        Patch(facecolor=color, alpha=0.88, edgecolor="white", label=legend_label)
+        for _, legend_label, color in strategy_specs
+    ]
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_ylabel("Solve Rate")
+    ax.set_ylim(0, 0.80)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.0%}"))
+    ax.set_title("Cross-Model Periodic Compaction (SWE-bench Verified mini, n=50)", pad=20)
+    ax.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=3,
+        framealpha=0.92,
+        borderaxespad=0.25,
+    )
+    ax.grid(axis="y", linestyle="-", alpha=0.20, zorder=0)
+    ax.grid(axis="x", visible=False)
+    ax.margins(x=0.04)
+
+    plt.tight_layout(rect=[0, 0.0, 1.0, 0.98])
+    plt.savefig(output_path, bbox_inches="tight", pad_inches=0.02, dpi=300)
+    print(f"Cross-model figure saved to {output_path}")
     plt.close()
 
 
@@ -1048,6 +1696,22 @@ def main():
         type=str,
         help="Path to trajectories dir for local summary-call stats",
     )
+    parser.add_argument(
+        "--cross-model-latex-out",
+        type=str,
+        help="Write cross-model LaTeX table to a file",
+    )
+    parser.add_argument(
+        "--cross-model-figure",
+        type=str,
+        help="Output cross-model figure to path (e.g., cross_model_figure.pdf)",
+    )
+    parser.add_argument("--threshold-sweep", action="store_true", help="Show threshold sweep table in terminal")
+    parser.add_argument(
+        "--threshold-sweep-latex-out",
+        type=str,
+        help="Write threshold sweep LaTeX table to a file",
+    )
     parser.add_argument("--no-fetch", action="store_true", help="Use hardcoded baselines only (no WandB)")
     parser.add_argument("--quiet", action="store_true", help="Suppress terminal table output")
     args = parser.parse_args()
@@ -1095,6 +1759,16 @@ def main():
         print(format_terminal_table(results))
         print()
 
+    # build cross-model table (used by terminal display, --latex, and --cross-model-latex-out)
+    if args.no_fetch:
+        cm_df = _build_cm_from_hardcoded()
+    else:
+        cm_df = build_cross_model_table(args.project, args.entity)
+
+    if not cm_df.empty and not args.quiet and not args.latex_out:
+        print(format_cross_model_terminal_table(cm_df))
+        print()
+
     if args.latex or args.latex_out:
         latex = generate_latex_table(results)
         if args.latex:
@@ -1103,10 +1777,66 @@ def main():
             print("=" * 60)
             print(latex)
             print()
+            if not cm_df.empty:
+                cm_latex = generate_cross_model_latex(cm_df)
+                print("=" * 60)
+                print("LaTeX Table 2 (Cross-Model):")
+                print("=" * 60)
+                print(cm_latex)
+                print()
         if args.latex_out:
             Path(args.latex_out).write_text(latex + "\n", encoding="utf-8")
             if not args.quiet:
                 print(f"Wrote LaTeX table to {args.latex_out}")
+
+    if args.cross_model_latex_out:
+        cm_latex = generate_cross_model_latex(cm_df)
+        Path(args.cross_model_latex_out).write_text(cm_latex + "\n", encoding="utf-8")
+        if not args.quiet:
+            print(f"Wrote cross-model LaTeX table to {args.cross_model_latex_out}")
+
+    if args.cross_model_figure:
+        generate_cross_model_figure(cm_df, args.cross_model_figure)
+
+    if args.threshold_sweep or args.threshold_sweep_latex_out:
+        if args.no_fetch:
+            ts_rows = []
+            for key, data in sorted(
+                THRESHOLD_SWEEP_DATA.items(),
+                key=lambda x: (x[0][0], x[0][1] or "", x[0][2] or 0, x[0][3]),
+            ):
+                group, summarizer, L, trigger_type = key
+                k, n = data["k"], data["n"]
+                lo, hi = wilson_ci(k, n)
+                rate = k / n if n else 0.0
+                ts_rows.append({
+                    "strategy_group": group,
+                    "summarizer": summarizer,
+                    "L": L,
+                    "trigger_type": trigger_type,
+                    "trigger_pct": data["trigger_pct"],
+                    "preds": data["preds"],
+                    "k": k, "n": n,
+                    "solve_rate": rate,
+                    "ci_lo": lo, "ci_hi": hi, "ci_half": (hi - lo) / 2,
+                    "vs_raw": rate - 0.64,
+                })
+            ts_df = pd.DataFrame(ts_rows)
+        else:
+            ts_df = build_threshold_sweep_table(args.project, args.entity)
+
+        if args.threshold_sweep and not ts_df.empty:
+            print("=" * 60)
+            print("Threshold Sweep (GLM-4.7, n=50):")
+            print("=" * 60)
+            print(format_threshold_sweep_terminal(ts_df))
+            print()
+
+        if args.threshold_sweep_latex_out and not ts_df.empty:
+            ts_latex = generate_threshold_sweep_latex(ts_df)
+            Path(args.threshold_sweep_latex_out).write_text(ts_latex + "\n", encoding="utf-8")
+            if not args.quiet:
+                print(f"Wrote threshold sweep LaTeX table to {args.threshold_sweep_latex_out}")
 
     if args.figure:
         generate_figure(results, args.figure)
